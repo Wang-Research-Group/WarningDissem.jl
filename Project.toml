@@ -1,0 +1,13 @@
+name = "WarningDissem"
+uuid = "333a9fe0-2533-477e-9c78-d55f30f8dc51"
+authors = ["Charles Koll <kollch@oregonstate.edu> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.6"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
