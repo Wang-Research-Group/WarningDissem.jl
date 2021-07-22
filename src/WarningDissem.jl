@@ -34,6 +34,7 @@ n = 10000;
 G = init_layers(n);
 
 total_resultsˣ, total_resultsʸ = [], [];
+highest_resultsˣ, highest_resultsʸ = [], [];
 
 frontier = Set();
 reached = Set();
@@ -46,6 +47,7 @@ function run(num_nodes)
     global frontier = Set(nodes);
     global reached = copy(frontier);
     global step = 0;
+    push!(resultsʸ, length(reached));
     #println("Starting with node: ", node);
 
     while !isempty(frontier)
@@ -64,22 +66,35 @@ function run(num_nodes)
 end
 
 function iter(num, num_starting)
+    global total_resultsˣ = [];
+    global total_resultsʸ = [];
+    #global highest_resultsˣ = [];
+    #global highest_resultsʸ = [];
     for i ∈ 1:num
-        println("Iteration ", i);
+        global resultsʸ = [];
+        #println("Iteration ", i);
         run(num_starting)
 
-        resultsˣ = 1:step
+        resultsˣ = 0:step
         resultsʸ = convert.(Int, resultsʸ)
         push!(total_resultsˣ, resultsˣ)
         push!(total_resultsʸ, resultsʸ)
-        global resultsʸ = []
+        push!(highest_resultsˣ, p)
+        push!(highest_resultsʸ, last(resultsʸ))
     end
 end
 
-iter(1000, 10)
+for j ∈ 0:.01:1
+    global p = j;
+    println("p = ", p);
+    iter(1000, 100);
+end
 
-lines(total_resultsˣ[1], total_resultsʸ[1]; color = RGBA(0., 0., 0., .1));
-lines!.(total_resultsˣ[2:end], total_resultsʸ[2:end]; color = RGBA(0., 0., 0., .1));
+#lines(total_resultsˣ[1], total_resultsʸ[1]; color = RGBA(0., 0., 0., .1));
+#lines!.(total_resultsˣ[2:end], total_resultsʸ[2:end]; color = RGBA(0., 0., 0., .1));
+highest_resultsˣ = convert.(Float32, highest_resultsˣ);
+highest_resultsʸ = convert.(Int, highest_resultsʸ);
+scatter(highest_resultsˣ, highest_resultsʸ; color = RGBA(0., 0., 0., 1.), markersize = 6);
 current_figure()
 
 #draw(SVG("test.svg"), gplot(g));
