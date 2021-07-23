@@ -10,6 +10,7 @@ using GLMakie, Colors
 #init_layers(n) = [barabasi_albert(n, 2), watts_strogatz(n, 4, 0.5), erdos_renyi(n, 2n)];
 
 
+#=
 g = grid((100, 100))
 # Starting with a basic ER network
 # 1001 nodes, .004 prob
@@ -64,7 +65,17 @@ function run(num_nodes)
         push!(resultsʸ, reached_len);
     end
 end
+=#
 
+function run(G, p, d, n₀)
+    # These are the nodes we're starting from
+    nodes = rand(vertices(G[1]), n₀);
+    frontier = Set(nodes);
+    reached = copy(frontier);
+    step = 0;
+end
+
+#=
 function iter(num, num_starting)
     global total_resultsˣ = [];
     global total_resultsʸ = [];
@@ -96,6 +107,7 @@ highest_resultsˣ = convert.(Float32, highest_resultsˣ);
 highest_resultsʸ = convert.(Int, highest_resultsʸ);
 scatter(highest_resultsˣ, highest_resultsʸ; color = RGBA(0., 0., 0., 1.), markersize = 6);
 current_figure()
+=#
 
 #draw(SVG("test.svg"), gplot(g));
 
