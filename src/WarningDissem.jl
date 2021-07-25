@@ -5,6 +5,7 @@ using LightGraphs, MetaGraphs
 using Distributions
 using DataFrames
 using GLMakie, Colors
+using ProgressMeter
 
 const Float = AbstractFloat;
 const Range = AbstractRange;
@@ -65,7 +66,7 @@ function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true)::DataFra
     df
 end
 
-function sensitivity_analysis(G::Vector, n::Int, n₀::Union{Int,Range}, p::Union{Float,Range}; pb = true)::DataFrame
+function sensitivity_analysis(G::Vector, n::Int, n₀, p; pb = true)::DataFrame
     df = DataFrame();
 
     progress_bar = Progress(length(n₀) * length(p); enabled = pb);
@@ -89,15 +90,43 @@ function draw_monte_carlo(ax, df)
     end
 end
 
-function draw_sensitivity_analysis(ax, df)
-    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, :p));
-    scatter!(ax, agg_df.p, agg_df.dissem; color = RGBA(0., 0., 0., 1.), markersize = 6);
+function draw_sensitivity_analysis(ax, df, x::Symbol)
+    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, [:n₀, :p]));
+    scatter!(ax, agg_df[!, x], agg_df.dissem; color = RGBA(0., 0., 0., 1.), markersize = 6);
+end
+
+function draw_grid_monte_carlo(f::Figure, G::Vector, n::Int, n₀, p, x::Symbol)
+    params = [];
+    dfs = [];
+    x_len, y_len = 0, 0;
+    if x == :p
+        x_len = length(n₀);
+        y_len = length(p);
+        for n₀ᵢ ∈ n₀, pᵢ ∈ p
+            push!(params, (n₀ᵢ, pᵢ));
+            push!(dfs, monte_carlo(G, n, n₀ᵢ, pᵢ; pb = false));
+        end
+    else
+        x_len = length(p);
+        y_len = length(n₀);
+        for pᵢ ∈ p, n₀ᵢ ∈ n₀
+            push!(params, (n₀ᵢ, pᵢ));
+            push!(dfs, monte_carlo(G, n, n₀ᵢ, pᵢ; pb = false));
+        end
+    end
+    axs = [];
+    for i ∈ 1:x_len, j ∈ 1:y_len
+        n₀, p = params[(i - 1) * y_len + j];
+        push!(axs, Axis(f[i, j], xlabel = "t", title = "n₀ = $n₀, p = $p"));
+    end
+    for (ax, df) ∈ zip(axs, dfs)
+        draw_monte_carlo(ax, df);
+    end
 end
 
 G = [grid((100, 100))];
 
 fig = Figure();
-ax = Axis(fig[1, 1], xlabel = "x label", ylabel = "y label", title = "Title");
 fig
 
 #draw(SVG("test.svg"), gplot(g));
