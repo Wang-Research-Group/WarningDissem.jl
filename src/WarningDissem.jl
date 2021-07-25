@@ -49,8 +49,9 @@ function disseminate(G::Vector, n₀::Int, p::Float, d::Distribution)::DataFrame
     DataFrame(n₀ = fill(n₀, t), p = fill(p, t), t = 0:(t - 1), dissem = dissem_total)
 end
 
-function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true)::DataFrame
-    d = Uniform();
+monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true) = monte_carlo(G, n, n₀, p, Uniform(); pb = pb);
+
+function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float, d::Distribution; pb = true)::DataFrame
     df = DataFrame();
 
     progress_bar = Progress(n; enabled = pb);
@@ -68,17 +69,22 @@ end
 
 function sensitivity_analysis(G::Vector, n::Int, n₀, p; pb = true)::DataFrame
     df = DataFrame();
+    d = Uniform();
 
     progress_bar = Progress(length(n₀) * length(p); enabled = pb);
 
     for n₀ᵢ ∈ n₀, pᵢ ∈ p
-        append!(df, monte_carlo(G, n, n₀ᵢ, pᵢ; pb = false));
+        append!(df, monte_carlo(G, n, n₀ᵢ, pᵢ, d; pb = false));
 
         next!(progress_bar);
     end
 
     df
 end
+
+namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
+
+namedtuple_to_string(nt::NamedTuple, nt_keys)::String = join(map(k -> string(k) * " = " * string(nt[k]), nt_keys), ", ");
 
 function draw_disseminate(ax, df; kwargs...)
     lines!(ax, df.t, df.dissem; kwargs...);
@@ -95,32 +101,21 @@ function draw_sensitivity_analysis(ax, df, x::Symbol)
     scatter!(ax, agg_df[!, x], agg_df.dissem; color = RGBA(0., 0., 0., 1.), markersize = 6);
 end
 
-function draw_grid_monte_carlo(f::Figure, G::Vector, n::Int, n₀, p, x::Symbol)
-    params = [];
-    dfs = [];
-    x_len, y_len = 0, 0;
-    if x == :p
-        x_len = length(n₀);
-        y_len = length(p);
-        for n₀ᵢ ∈ n₀, pᵢ ∈ p
-            push!(params, (n₀ᵢ, pᵢ));
-            push!(dfs, monte_carlo(G, n, n₀ᵢ, pᵢ; pb = false));
-        end
-    else
-        x_len = length(p);
-        y_len = length(n₀);
-        for pᵢ ∈ p, n₀ᵢ ∈ n₀
-            push!(params, (n₀ᵢ, pᵢ));
-            push!(dfs, monte_carlo(G, n, n₀ᵢ, pᵢ; pb = false));
-        end
-    end
+function draw_grid_monte_carlo(f, df, yx)
+    gdf = groupby(df, yx; sort = true);
+    params = keys(gdf);
+    titles = namedtuple_to_string.(NamedTuple.(params), tuple(yx));
+    # Fortunately we won't have many plots, otherwise this would be very expensive
+    y_len = length(unique(getindex.(params, yx[1])));
+    x_len = length(unique(getindex.(params, yx[2])));
+
     axs = [];
     for i ∈ 1:x_len, j ∈ 1:y_len
-        n₀, p = params[(i - 1) * y_len + j];
-        push!(axs, Axis(f[i, j], xlabel = "t", title = "n₀ = $n₀, p = $p"));
+        count = (i - 1) * y_len + j;
+        push!(axs, Axis(f[i, j], xlabel = "t", title = titles[count]));
     end
-    for (ax, df) ∈ zip(axs, dfs)
-        draw_monte_carlo(ax, df);
+    for (ax, dfᵢ) ∈ zip(axs, gdf)
+        draw_monte_carlo(ax, dfᵢ);
     end
 end
 
