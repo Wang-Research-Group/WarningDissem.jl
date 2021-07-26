@@ -28,7 +28,7 @@ disseminate(G::Vector, n₀::Int, p::Float)::DataFrame = disseminate(G, n₀, p,
 
 function disseminate(G::Vector, n₀::Int, p::Float, d::Distribution)::DataFrame
     # These are the nodes we're starting from
-    nodes = rand(vertices(G[1]), n₀);
+    nodes = sample(vertices(G[1]), n₀; replace = false);
 
     frontier = Set(nodes);
     reached = copy(frontier);
@@ -116,6 +116,18 @@ function draw_grid_monte_carlo(f, df, yx)
     end
     for (ax, dfᵢ) ∈ zip(axs, gdf)
         draw_monte_carlo(ax, dfᵢ);
+    end
+end
+
+function draw_row_sensitivity_analysis(f, df, x, row)
+    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, [:n₀, :p]));
+    gdf = groupby(agg_df, row);
+    params = keys(gdf);
+    titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
+
+    axs = [Axis(f[1, i], xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
+    for (ax, dfᵢ) ∈ zip(axs, gdf)
+        draw_sensitivity_analysis(ax, dfᵢ, x);
     end
 end
 
