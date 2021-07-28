@@ -110,9 +110,15 @@ function draw_grid_monte_carlo(f, df, yx)
     x_len = length(unique(getindex.(params, yx[2])));
 
     axs = [];
-    for i ∈ 1:x_len, j ∈ 1:y_len
-        count = (i - 1) * y_len + j;
-        push!(axs, Axis(f[i, j], xlabel = "t", title = titles[count]));
+    for i ∈ 1:y_len, j ∈ 1:x_len
+        count = (i - 1) * x_len + j;
+        push!(axs, Axis(f[i, j], title = titles[count]));
+    end
+    for ax ∈ axs[(end - x_len + 1):end]
+        ax.xlabel = "t";
+    end
+    for ax ∈ axs[1:x_len:end]
+        ax.ylabel = "Nodes Informed";
     end
     for (ax, dfᵢ) ∈ zip(axs, gdf)
         draw_monte_carlo(ax, dfᵢ);
@@ -126,6 +132,7 @@ function draw_row_sensitivity_analysis(f, df, x, row)
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
 
     axs = [Axis(f[1, i], xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
+    axs[1].ylabel = "Total Nodes Informed";
     for (ax, dfᵢ) ∈ zip(axs, gdf)
         draw_sensitivity_analysis(ax, dfᵢ, x);
     end
