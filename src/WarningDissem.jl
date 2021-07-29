@@ -1,11 +1,18 @@
 module WarningDissem
 
 # Write your package code here.
-using LightGraphs, MetaGraphs
-using Distributions
-using DataFrames
-using GLMakie, Colors
-using ProgressMeter
+import LightGraphs, MetaGraphs
+import Distributions
+import DataFrames
+import GLMakie, Colors
+import ProgressMeter
+
+const LG = LightGraphs;
+const MG = MetaGraphs;
+const Dist = Distributions;
+const DF = DataFrames;
+const Makie = GLMakie;
+const PM = ProgressMeter;
 
 const Float = AbstractFloat;
 const Range = AbstractRange;
@@ -22,13 +29,13 @@ const Range = AbstractRange;
 # Percolation threshold p: .25
 #p = .5
 
-get_neighbors(g, frontier, p, d) = map(x -> rand(d) ≤ p ? x : [], neighbors.(tuple(g), frontier));
+get_neighbors(g, frontier, p, d) = map(x -> rand(d) ≤ p ? x : [], LG.neighbors.(tuple(g), frontier));
 
-disseminate(G::Vector, n₀::Int, p::Float)::DataFrame = disseminate(G, n₀, p, Uniform());
+disseminate(G::Vector, n₀::Int, p::Float)::DF.DataFrame = disseminate(G, n₀, p, Dist.Uniform());
 
-function disseminate(G::Vector, n₀::Int, p::Float, d::Distribution)::DataFrame
+function disseminate(G::Vector, n₀::Int, p::Float, d::Dist.Distribution)::DF.DataFrame
     # These are the nodes we're starting from
-    nodes = sample(vertices(G[1]), n₀; replace = false);
+    nodes = Dist.sample(LG.vertices(G[1]), n₀; replace = false);
 
     frontier = Set(nodes);
     reached = copy(frontier);
@@ -46,37 +53,37 @@ function disseminate(G::Vector, n₀::Int, p::Float, d::Distribution)::DataFrame
         union!(reached, talked_to);
     end
 
-    DataFrame(n₀ = fill(n₀, t), p = fill(p, t), t = 0:(t - 1), dissem = dissem_total)
+    DF.DataFrame(n₀ = fill(n₀, t), p = fill(p, t), t = 0:(t - 1), dissem = dissem_total)
 end
 
-monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true) = monte_carlo(G, n, n₀, p, Uniform(); pb = pb);
+monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true) = monte_carlo(G, n, n₀, p, Dist.Uniform(); pb = pb);
 
-function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float, d::Distribution; pb = true)::DataFrame
-    df = DataFrame();
+function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float, d::Dist.Distribution; pb = true)::DF.DataFrame
+    df = DF.DataFrame();
 
-    progress_bar = Progress(n; enabled = pb);
+    progress_bar = PM.Progress(n; enabled = pb);
 
     for i ∈ 1:n
         newest_run = disseminate(G, n₀, p, d);
-        newest_run.run = fill(i, nrow(newest_run));
-        append!(df, newest_run);
+        newest_run.run = fill(i, DF.nrow(newest_run));
+        DF.append!(df, newest_run);
 
-        next!(progress_bar);
+        PM.next!(progress_bar);
     end
 
     df
 end
 
-function sensitivity_analysis(G::Vector, n::Int, n₀, p; pb = true)::DataFrame
-    df = DataFrame();
-    d = Uniform();
+function sensitivity_analysis(G::Vector, n::Int, n₀, p; pb = true)::DF.DataFrame
+    df = DF.DataFrame();
+    d = Dist.Uniform();
 
-    progress_bar = Progress(length(n₀) * length(p); enabled = pb);
+    progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
     for n₀ᵢ ∈ n₀, pᵢ ∈ p
         append!(df, monte_carlo(G, n, n₀ᵢ, pᵢ, d; pb = false));
 
-        next!(progress_bar);
+        PM.next!(progress_bar);
     end
 
     df
@@ -87,22 +94,22 @@ namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt)
 namedtuple_to_string(nt::NamedTuple, nt_keys)::String = join(map(k -> string(k) * " = " * string(nt[k]), nt_keys), ", ");
 
 function draw_disseminate(ax, df; kwargs...)
-    lines!(ax, df.t, df.dissem; kwargs...);
+    Makie.lines!(ax, df.t, df.dissem; kwargs...);
 end
 
 function draw_monte_carlo(ax, df)
-    for dfᵢ ∈ groupby(df, :run)
-        draw_disseminate(ax, dfᵢ; color = RGBA(0., 0., 0., .1));
+    for dfᵢ ∈ DF.groupby(df, :run)
+        draw_disseminate(ax, dfᵢ; color = Colors.RGBA(0., 0., 0., .1));
     end
 end
 
 function draw_sensitivity_analysis(ax, df, x::Symbol)
-    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, [:n₀, :p]));
-    scatter!(ax, agg_df[!, x], agg_df.dissem; color = RGBA(0., 0., 0., 1.), markersize = 6);
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p]));
+    Makie.scatter!(ax, agg_df[!, x], agg_df.dissem; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6);
 end
 
 function draw_grid_monte_carlo(f, df, yx)
-    gdf = groupby(df, yx; sort = true);
+    gdf = DF.groupby(df, yx; sort = true);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple(yx));
     # Fortunately we won't have many plots, otherwise this would be very expensive
@@ -112,7 +119,7 @@ function draw_grid_monte_carlo(f, df, yx)
     axs = [];
     for i ∈ 1:y_len, j ∈ 1:x_len
         count = (i - 1) * x_len + j;
-        push!(axs, Axis(f[i, j], title = titles[count]));
+        push!(axs, Makie.Axis(f[i, j], title = titles[count]));
     end
     for ax ∈ axs[(end - x_len + 1):end]
         ax.xlabel = "t";
@@ -126,21 +133,21 @@ function draw_grid_monte_carlo(f, df, yx)
 end
 
 function draw_row_sensitivity_analysis(f, df, x, row)
-    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, [:n₀, :p]));
-    gdf = groupby(agg_df, row);
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p]));
+    gdf = DF.groupby(agg_df, row);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
 
-    axs = [Axis(f[1, i], xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
+    axs = [Makie.Axis(f[1, i], xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
     axs[1].ylabel = "Total Nodes Informed";
     for (ax, dfᵢ) ∈ zip(axs, gdf)
         draw_sensitivity_analysis(ax, dfᵢ, x);
     end
 end
 
-G = [grid((100, 100))];
+G = [LG.grid((100, 100))];
 
-fig = Figure();
+fig = Makie.Figure();
 fig
 
 #draw(SVG("test.svg"), gplot(g));
