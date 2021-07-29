@@ -4,6 +4,7 @@ module WarningDissem
 import LightGraphs, MetaGraphs
 import Distributions
 import DataFrames
+import DataStructures
 import GLMakie, Colors
 import ProgressMeter
 
@@ -11,6 +12,7 @@ const LG = LightGraphs;
 const MG = MetaGraphs;
 const Dist = Distributions;
 const DF = DataFrames;
+const DS = DataStructures;
 const Makie = GLMakie;
 const PM = ProgressMeter;
 
@@ -29,6 +31,9 @@ const Range = AbstractRange;
 # Percolation threshold p: .25
 #p = .5
 
+# Since Julia still doesn't have an `unzip()`...
+unzip(a) = map(x -> getfield.(a, x), fieldnames(eltype(a)));
+
 get_neighbors(g, frontier, p, d) = map(x -> rand(d) ≤ p ? x : [], LG.neighbors.(tuple(g), frontier));
 
 disseminate(G::Vector, n₀::Int, p::Float)::DF.DataFrame = disseminate(G, n₀, p, Dist.Uniform());
@@ -37,23 +42,37 @@ function disseminate(G::Vector, n₀::Int, p::Float, d::Dist.Distribution)::DF.D
     # These are the nodes we're starting from
     nodes = Dist.sample(LG.vertices(G[1]), n₀; replace = false);
 
-    frontier = Set(nodes);
-    reached = copy(frontier);
-    t = 0;
-    dissem_total::Vector{Int} = [];
+    events = DS.PriorityQueue();
+    DS.enqueue!.(tuple(events), nodes, 0);
+    done = Set();
+    t = [];
 
-    while !isempty(frontier)
-        push!(dissem_total, length(reached));
-        t += 1;
+    while !isempty(events)
+        node, time = DS.dequeue_pair!(events);
+        push!(t, time);
 
-        # 3D vector; graph layers, frontier nodes, neighbors
-        G_neighbors = get_neighbors.(G, tuple(frontier), p, tuple(d));
-        talked_to = Iterators.flatten(Iterators.flatten(G_neighbors));
-        frontier = setdiff(Set(talked_to), reached);
-        union!(reached, talked_to);
+        # If the node decides to communicate to its neighbors
+        if rand(d) ≤ p
+            # Currently assuming communication on all layers at once
+            neighbors = Iterators.flatten(LG.neighbors.(G, node));
+            # For testing purposes, spend between 1-5 timesteps communicating to a neighbor
+            for neighbor in neighbors
+                if neighbor ∉ done && neighbor ∉ keys(events)
+                    DS.enqueue!(events, neighbor, time + rand(1:5));
+                end
+            end
+        end
+
+        push!(done, node);
     end
 
-    DF.DataFrame(n₀ = fill(n₀, t), p = fill(p, t), t = 0:(t - 1), dissem = dissem_total)
+    # Yes, I know this looks complicated. Let me break it down:
+    # If you're given an array of times (`t`), and each time is from one node being informed,
+    # this figures out for each time how many nodes have been informed to date.
+    # Note that it assumes the times (`t`) are already sorted in increasing order.
+    dissem, unique_t = unzip(reverse(unique(x -> x[2], reverse(collect(enumerate(t))))));
+
+    DF.DataFrame(n₀ = fill(n₀, length(dissem)), p = fill(p, length(dissem)), t = unique_t, dissem = dissem)
 end
 
 monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true) = monte_carlo(G, n, n₀, p, Dist.Uniform(); pb = pb);
