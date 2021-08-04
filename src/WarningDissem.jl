@@ -5,6 +5,7 @@ import LightGraphs, MetaGraphs
 import Distributions
 import DataFrames
 import DataStructures
+import CSV
 import GLMakie, Colors
 import ProgressMeter
 
@@ -33,6 +34,19 @@ const Range = AbstractRange;
 
 # Since Julia still doesn't have an `unzip()`...
 unzip(a) = map(x -> getfield.(a, x), fieldnames(eltype(a)));
+
+function make_network()
+    # [Phone, Word of Mouth, Social Media]
+    wom, dists = begin
+        coords = DF.DataFrame(CSV.File("wom_coords.csv"; types = [Float64, Float64]));
+        coord_matrix = collect(Matrix(coords)');
+        LG.euclidean_graph(coord_matrix; cutoff = 50.)
+    end;
+    n = LG.nv(wom);
+    phone = LG.watts_strogatz(n, 4, .5);
+    sm = LG.barabasi_albert(n, 2);
+    [phone, wom, sm]
+end
 
 get_neighbors(g, frontier, p, d) = map(x -> rand(d) ≤ p ? x : [], LG.neighbors.(tuple(g), frontier));
 
