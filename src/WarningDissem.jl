@@ -50,15 +50,19 @@ end
 
 get_neighbors(g, frontier, p, d) = map(x -> rand(d) ≤ p ? x : [], LG.neighbors.(tuple(g), frontier));
 
-disseminate(G::Vector, n₀::Int, p::Float)::DF.DataFrame = disseminate(G, n₀, p, Dist.Uniform());
+# Since many of the parameters to `disseminate()` can take either a distribution or a value, we should
+# have something that samples the distribution if that's what's provided, or just returns the value
+sample(x::Dist.Distribution) = Dist.rand(x);
+sample(x) = x;
 
-function disseminate(G::Vector, n₀::Int, p::Float, d::Dist.Distribution)::DF.DataFrame
+# Parameter `u` is always the uniform distribution, but we pass it in so that the distribution doesn't
+# have to be recreated on every run of the dissemination simulation
+function disseminate(G::Vector, n₀::Int, p::Float; u::Dist.Distribution = Dist.Uniform())::DF.DataFrame
     # These are the nodes we're starting from
     nodes = Dist.sample(LG.vertices(G[1]), n₀; replace = false);
 
     events = DS.PriorityQueue();
     DS.enqueue!.(tuple(events), nodes, 0);
-    done = Set();
     t = [];
 
     while !isempty(events)
@@ -66,18 +70,18 @@ function disseminate(G::Vector, n₀::Int, p::Float, d::Dist.Distribution)::DF.D
         push!(t, time);
 
         # If the node decides to communicate to its neighbors
-        if rand(d) ≤ p
+        if Dist.rand(u) ≤ p
             # Currently assuming communication on all layers at once
             neighbors = Iterators.flatten(LG.neighbors.(G, node));
             # For testing purposes, spend between 1-5 timesteps communicating to a neighbor
             for neighbor in neighbors
-                if neighbor ∉ done && neighbor ∉ keys(events)
+                if !MG.get_prop(G[1], neighbor, :done) && neighbor ∉ keys(events)
                     DS.enqueue!(events, neighbor, time + rand(1:5));
                 end
             end
         end
 
-        push!(done, node);
+        MG.set_prop!(G[1], node, :done, true);
     end
 
     # Yes, I know this looks complicated. Let me break it down:
@@ -89,15 +93,13 @@ function disseminate(G::Vector, n₀::Int, p::Float, d::Dist.Distribution)::DF.D
     DF.DataFrame(n₀ = fill(n₀, length(dissem)), p = fill(p, length(dissem)), t = unique_t, dissem = dissem)
 end
 
-monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; pb = true) = monte_carlo(G, n, n₀, p, Dist.Uniform(); pb = pb);
-
-function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float, d::Dist.Distribution; pb = true)::DF.DataFrame
+function monte_carlo(G::Vector, n::Int, n₀::Int, p::Float; u::Dist.Distribution = Dist.Uniform(), pb = true)::DF.DataFrame
     df = DF.DataFrame();
 
     progress_bar = PM.Progress(n; enabled = pb);
 
     for i ∈ 1:n
-        newest_run = disseminate(G, n₀, p, d);
+        newest_run = disseminate(G, n₀, p; u = u);
         newest_run.run = fill(i, DF.nrow(newest_run));
         DF.append!(df, newest_run);
 
@@ -109,12 +111,12 @@ end
 
 function sensitivity_analysis(G::Vector, n::Int, n₀, p; pb = true)::DF.DataFrame
     df = DF.DataFrame();
-    d = Dist.Uniform();
+    u = Dist.Uniform();
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
     for n₀ᵢ ∈ n₀, pᵢ ∈ p
-        append!(df, monte_carlo(G, n, n₀ᵢ, pᵢ, d; pb = false));
+        append!(df, monte_carlo(G, n, n₀ᵢ, pᵢ; u = u, pb = false));
 
         PM.next!(progress_bar);
     end
@@ -178,7 +180,10 @@ function draw_row_sensitivity_analysis(f, df, x, row)
     end
 end
 
-G = [LG.grid((100, 100))];
+G = [MG.MetaGraph(LG.grid((100, 100)))];
+for i ∈ LG.vertices(G[1])
+    MG.set_prop!(G[1], i, :done, false);
+end
 
 fig = Makie.Figure();
 fig
