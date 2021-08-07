@@ -51,7 +51,7 @@ end
 function makenet()
     # [Phone, Word of Mouth, Social Media]
     wom, dists = begin
-        coords = CSV.File("wom_coords.csv"; types = [Float64, Float64]) |> DF.DataFrame;
+        coords = CSV.File(joinpath("data", "wom_coords.csv"); types = [Float64, Float64]) |> DF.DataFrame;
         coord_matrix = collect(Matrix(coords)');
         LG.euclidean_graph(coord_matrix; cutoff = 50.)
     end;
