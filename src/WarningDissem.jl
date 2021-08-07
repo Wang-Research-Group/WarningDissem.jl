@@ -217,14 +217,22 @@ function sensitivity_analysis(G::Vector, n::Int, n₀, p, tₗ, d; pb = true)::D
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
-    for n₀ᵢ ∈ n₀, pᵢ ∈ p
-        newest_run = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(), tₗ, conflevel(), d; u = u, pb = false);
+    l = ReentrantLock();
+
+    #for n₀ᵢ ∈ n₀, pᵢ ∈ p
+    Threads.@threads for i ∈ CartesianIndices((length(n₀), length(p)))
+        n₀ᵢ, pᵢ = n₀[i[1]], p[i[2]];
+
+        newest_run = monte_carlo(deepcopy(G), n, n₀ᵢ, shareprob(pᵢ), layerprob(), tₗ, conflevel(), d; u = u, pb = false);
         len = DF.nrow(newest_run);
         newest_run.n₀ = fill(n₀ᵢ, len);
         newest_run.p = fill(pᵢ, len);
+
+        lock(l);
         DF.append!(df, newest_run);
 
         PM.next!(progress_bar);
+        unlock(l);
     end
 
     df
