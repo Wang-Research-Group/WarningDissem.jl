@@ -291,7 +291,7 @@ G = [LG.grid((100, 100)) |> MG.MetaGraph];
 fig = Makie.Figure();
 fig
 
-#draw(SVG("test.svg"), gplot(g));
-#Makie.save("filename.png", fig);
+#draw(SVG(joinpath("results", "test.svg")), gplot(g));
+#Makie.save(joinpath("results", "filename.png"), fig);
 
 end
