@@ -103,14 +103,45 @@ function conflevel()
     end
 end
 
+"""
+`dₜ`: Time until the disaster occurs
+    Range: [0, ∞) (actually could be passed in as a neg number, but clamp enforces this range for the calc)
+`c`: Confidence in the information
+    Range: [0, 1]
+
+`σ` is the max time that anyone would evac at; this is a linear scale to 0, so if 100% confident in the info
+then a 50% chance to evac would be `σ`/2 and a 100% chance would be 0.
+"""
+function evac(σ)
+    function (dₜ, c)
+        c * (1 - clamp(dₜ / σ, 0, 1))
+    end
+end
+
+"""
+Every node has an instance of this struct associated with it
+
+`comm`: If I've started communicating already
+`informed`: The list of nodes who have informed me
+`trust`: A dictionary of how much I trust neighboring nodes
+"""
 mutable struct NodeState
     comm::Bool
+    evac::Bool
     informed::Vector
     trust::Dict
 end
 
-NodeState(trust::Dict) = NodeState(false, [], trust);
+NodeState(trust::Dict) = NodeState(false, false, [], trust);
 
+"""
+Properties of a communication between nodes
+
+`t`: When the communication ends
+`t₀`: When the communication starts
+`src`: The node that transmits the information
+`srcₗ`: The layer index of the communication (`Missing` if the communication is from the initial broadcast)
+"""
 struct Comm
     t::Float
     t₀::Float
@@ -123,16 +154,23 @@ Base.isless(a::Comm, b::Comm) = isless((a.t, a.t₀), (b.t, b.t₀));
 Base.isequal(a::Comm, b::Comm) = isequal((a.t, a.t₀), (b.t, b.t₀));
 
 """
+If you're given an array of times (`times`), and each time is from one node having some state change,
+this figures out for each time how many nodes have had that state change to date.
+Note that it assumes the times (`times`) are already sorted in increasing order.
+"""
+hist_to_cmf(times) = (unzip ∘ reverse ∘ unique)(x -> x[2], (reverse ∘ collect ∘ enumerate)(times));
+
+"""
 Parameter `u` is always the uniform distribution, but we pass it in so that the distribution doesn't
 have to be recreated on every run of the dissemination simulation
 """
-function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, d; u::Dist.Distribution = Dist.Uniform())::DF.DataFrame
+function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform())
     # These are the nodes we're starting from
     nodes = Dist.sample(LG.vertices(G[1]), n₀; replace = false);
 
     events = DS.PriorityQueue();
     DS.enqueue!.(tuple(events), nodes, tuple(Comm(0, 0, missing, missing)));
-    times = [];
+    informed_times, evac_times = [], [];
 
     # Make sure all of the initial properties of the network are set
     initnet!(G);
@@ -153,10 +191,25 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, d; u::Dist.Distribu
 
         # If this is the first time the node is being informed, log it for the results
         if length(state.informed) == 1
-            push!(times, t);
+            push!(informed_times, t);
         end
 
         conf = c(state.informed, state.trust);
+
+        # If the node decides to evacuate
+        if !state.evac && Dist.rand(u) ≤ (sample ∘ r)(d - t, conf)
+            push!(evac_times, t);
+
+            for neighbor ∈ LG.neighbors(G[2], node)
+                # Remove from word-of-mouth only
+                success = LG.rem_edge!(G[2], node, neighbor);
+                if !success
+                    error("Unable to remove node $node from word-of-mouth network (neighbor $neighbor)");
+                end
+            end
+
+            state.evac = true;
+        end
 
         # If the node decides to communicate to its contacts
         if Dist.rand(u) ≤ (sample ∘ p)(d - t, tₗ, conf)
@@ -186,56 +239,54 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, d; u::Dist.Distribu
         end
     end
 
-    # Yes, I know this looks complicated. Let me break it down:
-    # If you're given an array of times (`times`), and each time is from one node being informed,
-    # this figures out for each time how many nodes have been informed to date.
-    # Note that it assumes the times (`times`) are already sorted in increasing order.
-    dissem, unique_t = (unzip ∘ reverse ∘ unique)(x -> x[2], (reverse ∘ collect ∘ enumerate)(times));
+    dissem, dissem_t = hist_to_cmf(informed_times);
+    evac, evac_t = hist_to_cmf(evac_times);
 
-    DF.DataFrame(t = unique_t, dissem = dissem)
+    DF.DataFrame(t = dissem_t, dissem = dissem), DF.DataFrame(t = evac_t, evac = evac)
 end
 
-function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, d; u::Dist.Distribution = Dist.Uniform(), pb = true)::DF.DataFrame
-    df = DF.DataFrame();
+function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform(), pb = true)
+    df, evacs = DF.DataFrame(), DF.DataFrame();
 
     progress_bar = PM.Progress(n; enabled = pb);
 
     for i ∈ 1:n
-        newest_run = disseminate(G, n₀, p, pₗ, tₗ, c, d; u = u);
+        newest_run, newest_evacs = disseminate(deepcopy(G), n₀, p, pₗ, tₗ, c, r, d; u = u);
         newest_run.run = fill(i, DF.nrow(newest_run));
+        newest_evacs.run = fill(i, DF.nrow(newest_evacs));
         DF.append!(df, newest_run);
+        DF.append!(evacs, newest_evacs);
 
         PM.next!(progress_bar);
     end
 
-    df
+    df, evacs
 end
 
-function sensitivity_analysis(G::Vector, n::Int, n₀, p, tₗ, d; pb = true)::DF.DataFrame
-    df = DF.DataFrame();
+function sensitivity_analysis(G::Vector, n::Int, n₀, p, σ, tₗ, d; pb = true)
+    df, evacs = DF.DataFrame(), DF.DataFrame();
     u = Dist.Uniform();
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
-    l = ReentrantLock();
+    for n₀ᵢ ∈ n₀, pᵢ ∈ p, σᵢ ∈ σ
+        newest_run, newest_evacs = monte_carlo(deepcopy(G), n, n₀ᵢ, shareprob(pᵢ), layerprob(), tₗ, conflevel(), evac(σᵢ), d; u = u, pb = false);
+        dissem_len = DF.nrow(newest_run);
+        evac_len = DF.nrow(newest_evacs);
+        newest_run.n₀ = fill(n₀ᵢ, dissem_len);
+        newest_run.p = fill(pᵢ, dissem_len);
+        newest_run.σ = fill(σᵢ, dissem_len);
+        newest_evacs.n₀ = fill(n₀ᵢ, evac_len);
+        newest_evacs.p = fill(pᵢ, evac_len);
+        newest_evacs.σ = fill(σᵢ, evac_len);
 
-    #for n₀ᵢ ∈ n₀, pᵢ ∈ p
-    Threads.@threads for i ∈ CartesianIndices((length(n₀), length(p)))
-        n₀ᵢ, pᵢ = n₀[i[1]], p[i[2]];
-
-        newest_run = monte_carlo(deepcopy(G), n, n₀ᵢ, shareprob(pᵢ), layerprob(), tₗ, conflevel(), d; u = u, pb = false);
-        len = DF.nrow(newest_run);
-        newest_run.n₀ = fill(n₀ᵢ, len);
-        newest_run.p = fill(pᵢ, len);
-
-        lock(l);
         DF.append!(df, newest_run);
+        DF.append!(evacs, newest_evacs);
 
         PM.next!(progress_bar);
-        unlock(l);
     end
 
-    df
+    df, evacs
 end
 
 namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
@@ -253,7 +304,7 @@ function draw_monte_carlo(ax, df)
 end
 
 function draw_sensitivity_analysis(ax, df, x::Symbol)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p]));
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :σ]));
     Makie.scatter!(ax, agg_df[!, x], agg_df.dissem; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6);
 end
 
