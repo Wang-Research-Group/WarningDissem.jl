@@ -21,17 +21,6 @@ const Float = AbstractFloat;
 const Range = AbstractRange;
 #using Compose, GraphPlot
 
-#dba = barabasi_albert(1000, 2; is_directed=true)
-#init_layers(n) = [barabasi_albert(n, 2), watts_strogatz(n, 4, 0.5), erdos_renyi(n, 2n)];
-
-
-# Starting with a basic ER network
-# 1001 nodes, .004 prob
-#g = erdos_renyi(100001, .00004)
-# Expected degree: 4
-# Percolation threshold p: .25
-#p = .5
-
 """
 Since Julia still doesn't have an `unzip()`...
 """
@@ -53,25 +42,27 @@ function makenet()
     wom, dists = begin
         coords = CSV.File(joinpath("data", "wom_coords.csv"); types = [Float64, Float64]) |> DF.DataFrame;
         coord_matrix = collect(Matrix(coords)');
-        LG.euclidean_graph(coord_matrix; cutoff = 50.)
+        LG.euclidean_graph(coord_matrix; cutoff = 60.)
     end;
     wom = MG.MetaGraph(wom);
 
     n = LG.nv(wom);
-    phone = LG.watts_strogatz(n, 4, .5) |> MG.MetaGraph;
-    sm = LG.barabasi_albert(n, 2) |> MG.MetaGraph;
+    phone = LG.watts_strogatz(n, 10, .7) |> MG.MetaGraph;
+    sm = LG.barabasi_albert(n, ceil(.374n) |> Int, 105) |> MG.MetaGraph;
 
     [phone, wom, sm]
 end
 
 """
 Since many of the parameters to `disseminate()` can take either a distribution or a value, we should
-have something that samples the distribution if that's what's provided, or just returns the value
+have something that samples the distribution if that's what's provided, or just returns the value.
+NB: None of the results from this can be negative, so if that's something you need then either offset
+    the results outside of this function or add another version that doesn't clamp it.
 """
-sample(x::Dist.Distribution) = Dist.rand(x);
-sample(x) = x;
-sample(x::Dist.Distribution, n) = Dist.rand(x, n);
-sample(x, n) = fill(x, n);
+sample(x::Dist.Distribution) = max(Dist.rand(x), 0);
+sample(x) = max(x, 0);
+sample(x::Dist.Distribution, n) = max.(Dist.rand(x, n), 0);
+sample(x, n) = max.(fill(x, n), 0);
 
 """
 `dₜ`: Time remaining until disaster
@@ -80,26 +71,25 @@ sample(x, n) = fill(x, n);
 """
 function shareprob(p)
     function (dₜ, tₗ, conf)
-        # TODO: Actually use `dₜ` and `tₗ`
-        conf * p * (1 + 0 * minimum(tₗ) / dₜ)
+        conf * p * max(1 - (minimum ∘ broadcast)(sample, tₗ) / max(dₜ, 0), 0)
     end
 end
 
-function layerprob()
+function layerprob(base)
     function (dₜ, tₗ)
-        # TODO: Actually use `dₜ` and `tₗ`
-        [.3 + 0 * tₗ[1] / dₜ, .4 + 0 * tₗ[2] / dₜ, .3 + 0 * tₗ[3] / dₜ]
+        @. unscaled = base * max(1 - sample(tₗ) / max(dₜ, 0), 0);
+        unscaled ./ sum(unscaled)
     end
 end
 
-function conflevel()
+function conflevel(cₙ)
     function (informed, trust)
         # If informed by the broadcast, have the highest confidence level
         if ismissing(informed[1])
             return 1.
         end
         x = map(i -> trust[i], informed);
-        clamp(sum(x) / 2, 0, 1)
+        clamp(sum(x) / (cₙ + 1), 0, 1)
     end
 end
 
@@ -109,12 +99,12 @@ end
 `c`: Confidence in the information
     Range: [0, 1]
 
-`σ` is the max time that anyone would evac at; this is a linear scale to 0, so if 100% confident in the info
-then a 50% chance to evac would be `σ`/2 and a 100% chance would be 0.
+`tᵣ` is the max time that anyone would evac at; this is a linear scale to 0, so if 100% confident in the info
+then a 50% chance to evac would be `tᵣ`/2 and a 100% chance would be 0.
 """
-function evac(σ)
+function evac(tᵣ)
     function (dₜ, c)
-        c * (1 - clamp(dₜ / σ, 0, 1))
+        c * (1 - clamp(dₜ / tᵣ, 0, 1))
     end
 end
 
@@ -158,7 +148,7 @@ If you're given an array of times (`times`), and each time is from one node havi
 this figures out for each time how many nodes have had that state change to date.
 Note that it assumes the times (`times`) are already sorted in increasing order.
 """
-hist_to_cmf(times) = (unzip ∘ reverse ∘ unique)(x -> x[2], (reverse ∘ collect ∘ enumerate)(times));
+hist2cmf(times) = (unzip ∘ reverse ∘ unique)(x -> x[2], (reverse ∘ collect ∘ enumerate)(times));
 
 """
 Parameter `u` is always the uniform distribution, but we pass it in so that the distribution doesn't
@@ -239,8 +229,8 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         end
     end
 
-    dissem, dissem_t = hist_to_cmf(informed_times);
-    evac, evac_t = hist_to_cmf(evac_times);
+    dissem, dissem_t = hist2cmf(informed_times);
+    evac, evac_t = hist2cmf(evac_times);
 
     DF.DataFrame(t = dissem_t, dissem = dissem), DF.DataFrame(t = evac_t, evac = evac)
 end
@@ -263,22 +253,22 @@ function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Di
     df, evacs
 end
 
-function sensitivity_analysis(G::Vector, n::Int, n₀, p, σ, tₗ, d; pb = true)
+function sensitivity_analysis(G::Vector, n::Int, n₀, p, tᵣ, tₗ, d; pb = true)
     df, evacs = DF.DataFrame(), DF.DataFrame();
     u = Dist.Uniform();
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
-    for n₀ᵢ ∈ n₀, pᵢ ∈ p, σᵢ ∈ σ
-        newest_run, newest_evacs = monte_carlo(deepcopy(G), n, n₀ᵢ, shareprob(pᵢ), layerprob(), tₗ, conflevel(), evac(σᵢ), d; u = u, pb = false);
+    for n₀ᵢ ∈ n₀, pᵢ ∈ p, tᵣᵢ ∈ tᵣ
+        newest_run, newest_evacs = monte_carlo(deepcopy(G), n, n₀ᵢ, shareprob(pᵢ), layerprob([.3, .7, 0.]), tₗ, conflevel(2), evac(tᵣᵢ), d; u = u, pb = false);
         dissem_len = DF.nrow(newest_run);
         evac_len = DF.nrow(newest_evacs);
         newest_run.n₀ = fill(n₀ᵢ, dissem_len);
         newest_run.p = fill(pᵢ, dissem_len);
-        newest_run.σ = fill(σᵢ, dissem_len);
+        newest_run.tᵣ = fill(tᵣᵢ, dissem_len);
         newest_evacs.n₀ = fill(n₀ᵢ, evac_len);
         newest_evacs.p = fill(pᵢ, evac_len);
-        newest_evacs.σ = fill(σᵢ, evac_len);
+        newest_evacs.tᵣ = fill(tᵣᵢ, evac_len);
 
         DF.append!(df, newest_run);
         DF.append!(evacs, newest_evacs);
@@ -304,7 +294,7 @@ function draw_monte_carlo(ax, df)
 end
 
 function draw_sensitivity_analysis(ax, df, x::Symbol)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :σ]));
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :tᵣ]));
     Makie.scatter!(ax, agg_df[!, x], agg_df.dissem; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6);
 end
 
@@ -345,7 +335,15 @@ function draw_row_sensitivity_analysis(f, df, x, row)
     end
 end
 
-G = [LG.grid((100, 100)) |> MG.MetaGraph];
+function avgdeg(g)
+    deg = LG.degree(g);
+    sum(deg) / length(deg)
+end
+
+function coverage(g)
+    deg = LG.degree(g);
+    1 - count(isequal(0), deg) / length(deg)
+end
 
 fig = Makie.Figure();
 fig
