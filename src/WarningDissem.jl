@@ -1,6 +1,7 @@
 module WarningDissem
 
 # Write your package code here.
+import Random
 import LightGraphs, MetaGraphs
 import Distributions
 import DataFrames
@@ -25,6 +26,23 @@ const Range = AbstractRange;
 Since Julia still doesn't have an `unzip()`...
 """
 unzip(a) = map(x -> getfield.(a, x), (fieldnames ∘ eltype)(a));
+
+"""
+A view into an array so you can see more than one element at once.
+
+Example:
+```
+a = [1, 2, 3, 4];
+window(a, 2)
+```
+Output:
+```
+  [1, 2]
+  [2, 3]
+  [3, 4]
+```
+"""
+window(x, len) = view.(Ref(x), (:).(1:length(x) - (len - 1), len:length(x)));
 
 function initnet!(G)
     # All vertex properties are set in the first layer only
@@ -59,10 +77,10 @@ have something that samples the distribution if that's what's provided, or just 
 NB: None of the results from this can be negative, so if that's something you need then either offset
     the results outside of this function or add another version that doesn't clamp it.
 """
-sample(x::Dist.Distribution) = max(Dist.rand(x), 0);
-sample(x) = max(x, 0);
-sample(x::Dist.Distribution, n) = max.(Dist.rand(x, n), 0);
-sample(x, n) = max.(fill(x, n), 0);
+sample(x::Dist.Distribution) = Dist.rand(x);
+sample(x) = x;
+sample(x::Dist.Distribution, n) = Dist.rand(x, n);
+sample(x, n) = fill(x, n);
 
 """
 `dₜ`: Time remaining until disaster
@@ -187,7 +205,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         conf = c(state.informed, state.trust);
 
         # If the node decides to evacuate
-        if !state.evac && Dist.rand(u) ≤ (sample ∘ r)(d - t, conf)
+        if !state.evac && sample(u) ≤ (sample ∘ r)(d - t, conf)
             push!(evac_times, t);
 
             for neighbor ∈ LG.neighbors(G[2], node)
@@ -202,20 +220,23 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         end
 
         # If the node decides to communicate to its contacts
-        if Dist.rand(u) ≤ (sample ∘ p)(d - t, tₗ, conf)
+        if sample(u) ≤ (sample ∘ p)(d - t, tₗ, conf)
             # Pick a layer based on the weights of `pₗ`
-            layer = searchsortedfirst((cumsum ∘ broadcast)(sample, pₗ(d - t, tₗ)), Dist.rand(u));
+            layer = searchsortedfirst((cumsum ∘ broadcast)(sample, pₗ(d - t, tₗ)), sample(u));
             contacts = LG.neighbors(G[layer], node);
 
             # If reaching out on social media, contact everyone at once
             comm_contacts = if layer == 3
                 zip(contacts, fill(sample(tₗ[layer]), length(contacts)))
             else
-                # Randomly select a number of peers to contact
-                # NB: The distribution `u` only works here because it's between 0-1
-                num_contacting = ceil(Dist.rand(u) * length(contacts)) |> Int;
-                contacting = Dist.sample(contacts, num_contacting; replace = false);
-                zip(contacting, (cumsum ∘ sample)(tₗ[layer], length(contacting)))
+                Random.shuffle!(contacts);
+
+                # Determine start/end times for communicating with everyone, and zip in contacts
+                times = zip(contacts, vcat(0, (cumsum ∘ sample)(tₗ[layer], length(contacts))));
+                # Once we decide not to inform the next person, we're all done
+                # Check with start times, return with end times
+                # Checking against 0 because we already decided to communicate at least once (if there are any contacts)
+                map((cᵢ, (_, tₑ)) -> (cᵢ, tₑ), Iterators.takewhile((_, (tₛ, _)) -> tₛ == 0 || sample(u) ≤ (sample ∘ p)(d - (t + tₛ), tₗ, conf), times))
             end;
 
             for (i, tᵢ) in comm_contacts
