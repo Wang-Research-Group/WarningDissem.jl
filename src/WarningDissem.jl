@@ -55,18 +55,18 @@ function initnet!(G)
     end
 end
 
-function makenet()
+function makenet(phoneₖ, phoneᵦ, wom_file, womₘₐₓ, smₙ₀, smₖ)
     # [Phone, Word of Mouth, Social Media]
     wom, dists = begin
-        coords = CSV.File(joinpath("data", "wom_coords.csv"); types = [Float64, Float64]) |> DF.DataFrame;
+        coords = CSV.File(joinpath("data", wom_file); types = [Float64, Float64]) |> DF.DataFrame;
         coord_matrix = collect(Matrix(coords)');
-        LG.euclidean_graph(coord_matrix; cutoff = 60.)
+        LG.euclidean_graph(coord_matrix; cutoff = womₘₐₓ)
     end;
     wom = MG.MetaGraph(wom);
 
     n = LG.nv(wom);
-    phone = LG.watts_strogatz(n, 10, .7) |> MG.MetaGraph;
-    sm = LG.barabasi_albert(n, ceil(.374n) |> Int, 105) |> MG.MetaGraph;
+    phone = LG.watts_strogatz(n, phoneₖ, phoneᵦ) |> MG.MetaGraph;
+    sm = LG.barabasi_albert(n, ceil(smₙ₀ * n) |> Int, smₖ) |> MG.MetaGraph;
 
     [phone, wom, sm]
 end
@@ -95,7 +95,7 @@ end
 
 function layerprob(base)
     function (dₜ, tₗ)
-        @. unscaled = base * max(1 - sample(tₗ) / max(dₜ, 0), 0);
+        unscaled = @. base * max(1 - sample(tₗ) / max(dₜ, 0), 0);
         unscaled ./ sum(unscaled)
     end
 end
@@ -162,11 +162,11 @@ Base.isless(a::Comm, b::Comm) = isless((a.t, a.t₀), (b.t, b.t₀));
 Base.isequal(a::Comm, b::Comm) = isequal((a.t, a.t₀), (b.t, b.t₀));
 
 """
-If you're given an array of times (`times`), and each time is from one node having some state change,
-this figures out for each time how many nodes have had that state change to date.
-Note that it assumes the times (`times`) are already sorted in increasing order.
+Given a dataframe (`df`) and a column of that dataframe (`col`), this function counts duplicates and
+performs a cumulative sum. Essentially a conversion from a histogram to a cmf.
+`agg_col` is the name of the new aggregate column.
 """
-hist2cmf(times) = (unzip ∘ reverse ∘ unique)(x -> x[2], (reverse ∘ collect ∘ enumerate)(times));
+hist2cmf(df::DF.DataFrame, col, agg_col) = DF.transform(DF.combine(DF.groupby(df, col), DF.nrow => agg_col), agg_col => cumsum; renamecols = false);
 
 """
 Parameter `u` is always the uniform distribution, but we pass it in so that the distribution doesn't
@@ -178,7 +178,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
 
     events = DS.PriorityQueue();
     DS.enqueue!.(tuple(events), nodes, tuple(Comm(0, 0, missing, missing)));
-    informed_times, evac_times = [], [];
+    informed_times, evac_times, informed_layers = [], [], Dict(:t => [], :layer => []);
 
     # Make sure all of the initial properties of the network are set
     initnet!(G);
@@ -200,6 +200,10 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         # If this is the first time the node is being informed, log it for the results
         if length(state.informed) == 1
             push!(informed_times, t);
+            if !ismissing(comm.srcₗ)
+                push!(informed_layers[:t], t);
+                push!(informed_layers[:layer], comm.srcₗ);
+            end
         end
 
         conf = c(state.informed, state.trust);
@@ -208,9 +212,9 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         if !state.evac && sample(u) ≤ (sample ∘ r)(d - t, conf)
             push!(evac_times, t);
 
-            for neighbor ∈ LG.neighbors(G[2], node)
+            for neighbor ∈ copy(LG.neighbors(G[2], node))
                 # Remove from word-of-mouth only
-                success = LG.rem_edge!(G[2], node, neighbor);
+                success = MG.rem_edge!(G[2], node, neighbor);
                 if !success
                     error("Unable to remove node $node from word-of-mouth network (neighbor $neighbor)");
                 end
@@ -223,7 +227,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         if sample(u) ≤ (sample ∘ p)(d - t, tₗ, conf)
             # Pick a layer based on the weights of `pₗ`
             layer = searchsortedfirst((cumsum ∘ broadcast)(sample, pₗ(d - t, tₗ)), sample(u));
-            contacts = LG.neighbors(G[layer], node);
+            contacts = copy(LG.neighbors(G[layer], node));
 
             # If reaching out on social media, contact everyone at once
             comm_contacts = if layer == 3
@@ -232,11 +236,15 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
                 Random.shuffle!(contacts);
 
                 # Determine start/end times for communicating with everyone, and zip in contacts
-                times = zip(contacts, vcat(0, (cumsum ∘ sample)(tₗ[layer], length(contacts))));
+                times = zip(contacts, window(vcat(0, (cumsum ∘ sample)(tₗ[layer], length(contacts))), 2));
                 # Once we decide not to inform the next person, we're all done
                 # Check with start times, return with end times
                 # Checking against 0 because we already decided to communicate at least once (if there are any contacts)
-                map((cᵢ, (_, tₑ)) -> (cᵢ, tₑ), Iterators.takewhile((_, (tₛ, _)) -> tₛ == 0 || sample(u) ≤ (sample ∘ p)(d - (t + tₛ), tₗ, conf), times))
+                map(Iterators.takewhile(times) do (_, (tₛ, _))
+                        tₛ == 0 || sample(u) ≤ (sample ∘ p)(d - (t + tₛ), tₗ, conf)
+                    end) do (cᵢ, (_, tₑ))
+                    (cᵢ, tₑ)
+                end
             end;
 
             for (i, tᵢ) in comm_contacts
@@ -250,54 +258,68 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         end
     end
 
-    dissem, dissem_t = hist2cmf(informed_times);
-    evac, evac_t = hist2cmf(evac_times);
+    dissem = hist2cmf(DF.DataFrame(t = Float.(informed_times)), :t, :dissem);
+    evac = hist2cmf(DF.DataFrame(t = Float.(evac_times)), :t, :evac);
 
-    DF.DataFrame(t = dissem_t, dissem = dissem), DF.DataFrame(t = evac_t, evac = evac)
+    # Form layer dissemination data in a more convenient format
+    layer_names = [:phone, :wom, :sm];
+    temp = DF.DataFrame(informed_layers);
+    DF.transform!(temp, :layer => x -> getindex.(tuple(layer_names), x); renamecols = false);
+    # Add a type here because otherwise sometimes `unstack` gets an invalid dataframe type (not quite sure why, maybe an update to DataFrames will fix it)
+    temp::DF.DataFrame = DF.combine(DF.groupby(temp, [:t, :layer]), DF.nrow);
+    temp = DF.unstack(temp, :layer, :nrow);
+    # Prepend the dataframe with a set of zeros
+    layers = DF.DataFrame(t = [0], phone = [0], wom = [0], sm = [0]);
+    DF.append!(layers, temp; cols = :subset);
+    # Replace missing values with 0 since we'll take a cumulative sum on it next
+    DF.transform!(layers, x -> coalesce.(x, 0));
+    DF.transform!(layers, :phone => cumsum, :wom => cumsum, :sm => cumsum; renamecols = false);
+
+    dissem, evac, layers
 end
 
 function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform(), pb = true)
-    df, evacs = DF.DataFrame(), DF.DataFrame();
+    data = [DF.DataFrame() for _ ∈ 1:3];
 
     progress_bar = PM.Progress(n; enabled = pb);
 
     for i ∈ 1:n
-        newest_run, newest_evacs = disseminate(deepcopy(G), n₀, p, pₗ, tₗ, c, r, d; u = u);
-        newest_run.run = fill(i, DF.nrow(newest_run));
-        newest_evacs.run = fill(i, DF.nrow(newest_evacs));
-        DF.append!(df, newest_run);
-        DF.append!(evacs, newest_evacs);
+        newest = disseminate(deepcopy(G), n₀, p, pₗ, tₗ, c, r, d; u = u);
+        DF.insertcols!.(newest, :run => i);
+        DF.append!.(data, newest);
 
         PM.next!(progress_bar);
     end
 
-    df, evacs
+    data
 end
 
-function sensitivity_analysis(G::Vector, n::Int, n₀, p, tᵣ, tₗ, d; pb = true)
-    df, evacs = DF.DataFrame(), DF.DataFrame();
+function sensitivity_analysis(n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d; pb = true)
+    G = makenet(10, .7, "wom_coords.csv", 60., .374, 105);
+    sensitivity_analysis(G, n, n₀, p, pₗ, tₗ, c, tᵣ, d; pb)
+end
+
+function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d; pb = true)
+    data = [DF.DataFrame() for _ ∈ 1:3];
     u = Dist.Uniform();
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
-    for n₀ᵢ ∈ n₀, pᵢ ∈ p, tᵣᵢ ∈ tᵣ
-        newest_run, newest_evacs = monte_carlo(deepcopy(G), n, n₀ᵢ, shareprob(pᵢ), layerprob([.3, .7, 0.]), tₗ, conflevel(2), evac(tᵣᵢ), d; u = u, pb = false);
-        dissem_len = DF.nrow(newest_run);
-        evac_len = DF.nrow(newest_evacs);
-        newest_run.n₀ = fill(n₀ᵢ, dissem_len);
-        newest_run.p = fill(pᵢ, dissem_len);
-        newest_run.tᵣ = fill(tᵣᵢ, dissem_len);
-        newest_evacs.n₀ = fill(n₀ᵢ, evac_len);
-        newest_evacs.p = fill(pᵢ, evac_len);
-        newest_evacs.tᵣ = fill(tᵣᵢ, evac_len);
+    for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, tᵣᵢ ∈ tᵣ
+        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(tᵣᵢ), d; u = u, pb = false);
+        DF.insertcols!.(newest, :n₀ => n₀ᵢ);
+        DF.insertcols!.(newest, :p => pᵢ);
+        DF.insertcols!.(newest, :pₗ => tuple(pₗᵢ));
+        DF.insertcols!.(newest, :tₗ => tuple(tₗᵢ));
+        DF.insertcols!.(newest, :c => cᵢ);
+        DF.insertcols!.(newest, :tᵣ => tᵣᵢ);
 
-        DF.append!(df, newest_run);
-        DF.append!(evacs, newest_evacs);
+        DF.append!.(data, newest);
 
         PM.next!(progress_bar);
     end
 
-    df, evacs
+    data
 end
 
 namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
@@ -308,6 +330,13 @@ function draw_disseminate(ax, df; kwargs...)
     Makie.lines!(ax, df.t, df.dissem; kwargs...);
 end
 
+function draw_layers(ax, df; kwargs...)
+    Makie.lines!(ax, df.t, df.phone; label = "phone", kwargs...);
+    Makie.lines!(ax, df.t, df.wom; label = "word of mouth", kwargs...);
+    Makie.lines!(ax, df.t, df.sm; label = "social media", kwargs...);
+    Makie.axislegend(ax; unique = true);
+end
+
 function draw_monte_carlo(ax, df)
     for dfᵢ ∈ DF.groupby(df, :run)
         draw_disseminate(ax, dfᵢ; color = Colors.RGBA(0., 0., 0., .1));
@@ -315,7 +344,7 @@ function draw_monte_carlo(ax, df)
 end
 
 function draw_sensitivity_analysis(ax, df, x::Symbol)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :tᵣ]));
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ]));
     Makie.scatter!(ax, agg_df[!, x], agg_df.dissem; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6);
 end
 
@@ -344,7 +373,7 @@ function draw_grid_monte_carlo(f, df, yx)
 end
 
 function draw_row_sensitivity_analysis(f, df, x, row)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p]));
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ]));
     gdf = DF.groupby(agg_df, row);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
