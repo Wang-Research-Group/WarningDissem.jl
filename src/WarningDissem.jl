@@ -265,9 +265,12 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
     layer_names = [:phone, :wom, :sm];
     temp = DF.DataFrame(informed_layers);
     DF.transform!(temp, :layer => x -> getindex.(tuple(layer_names), x); renamecols = false);
-    # Add a type here because otherwise sometimes `unstack` gets an invalid dataframe type (not quite sure why, maybe an update to DataFrames will fix it)
-    temp::DF.DataFrame = DF.combine(DF.groupby(temp, [:t, :layer]), DF.nrow);
-    temp = DF.unstack(temp, :layer, :nrow);
+    # Since `unstack` doesn't play nicely with an empty dataframe, do it ourselves
+    temp = if isempty(temp)
+        DF.select(temp, :t)
+    else
+        DF.unstack(DF.combine(DF.groupby(temp, [:t, :layer]), DF.nrow), :layer, :nrow);
+    end;
     # Prepend the dataframe with a set of zeros
     layers = DF.DataFrame(t = [0], phone = [0], wom = [0], sm = [0]);
     DF.append!(layers, temp; cols = :subset);
