@@ -47,10 +47,12 @@ window(x, len) = view.(Ref(x), (:).(1:length(x) - (len - 1), len:length(x)));
 function initnet!(G)
     # All vertex properties are set in the first layer only
     g = G[1];
+    layer_trusts = [.43, .39, .48];
     for v ∈ LG.vertices(g)
-        neighbors = (unique ∘ Iterators.flatten ∘ broadcast)(LG.neighbors, G, v);
-        # If we actually start using trust, this will have to be something else
-        trust = zip(neighbors, (ones ∘ length)(neighbors)) |> Dict;
+        neighbors = LG.neighbors.(G, v);
+        trust = Iterators.flatten(map(enumerate(neighbors)) do (i, neighbor_set)
+            map(neighbor -> ((neighbor, i), layer_trusts[i]), neighbor_set)
+        end) |> Dict;
         MG.set_prop!(g, v, :state, NodeState(trust));
     end
 end
@@ -103,7 +105,7 @@ end
 function conflevel(cₙ)
     function (informed, trust)
         # If informed by the broadcast, have the highest confidence level
-        if ismissing(informed[1])
+        if ismissing(informed[1][1])
             return 1.
         end
         x = map(i -> trust[i], informed);
@@ -131,7 +133,7 @@ Every node has an instance of this struct associated with it
 
 `comm`: If I've started communicating already
 `informed`: The list of nodes who have informed me
-`trust`: A dictionary of how much I trust neighboring nodes
+`trust`: A dictionary of how much I trust neighboring nodes (keys are tuples of (node, layer))
 """
 mutable struct NodeState
     comm::Bool
@@ -178,7 +180,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
 
     events = DS.PriorityQueue();
     DS.enqueue!.(tuple(events), nodes, tuple(Comm(0, 0, missing, missing)));
-    informed_times, evac_times, informed_layers = [], [], Dict(:t => [], :layer => []);
+    informed_times, prob_times, informed_layers, evac_times = [], [], Dict(:t => [], :layer => []), [];
 
     # Make sure all of the initial properties of the network are set
     initnet!(G);
@@ -190,7 +192,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         # This is a reference, so any changes will be made inside the graph as well
         state = MG.get_prop(G[1], node, :state);
 
-        push!(state.informed, comm.src);
+        push!(state.informed, (comm.src, comm.srcₗ));
 
         # The node already decided to communicate
         if state.comm
@@ -224,7 +226,9 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         end
 
         # If the node decides to communicate to its contacts
-        if sample(u) ≤ (sample ∘ p)(d - t, tₗ, conf)
+        prob = (sample ∘ p)(d - t, tₗ, conf);
+        if sample(u) ≤ prob
+            push!(prob_times, prob);
             # Pick a layer based on the weights of `pₗ`
             layer = searchsortedfirst((cumsum ∘ broadcast)(sample, pₗ(d - t, tₗ)), sample(u));
             contacts = copy(LG.neighbors(G[layer], node));
@@ -259,6 +263,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
     end
 
     dissem = hist2cmf(DF.DataFrame(t = Float.(informed_times)), :t, :dissem);
+    probs = hist2cmf(DF.DataFrame(t = Float.(prob_times)), :t, :prob);
     evac = hist2cmf(DF.DataFrame(t = Float.(evac_times)), :t, :evac);
 
     # Form layer dissemination data in a more convenient format
@@ -278,11 +283,11 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
     DF.transform!(layers, x -> coalesce.(x, 0));
     DF.transform!(layers, :phone => cumsum, :wom => cumsum, :sm => cumsum; renamecols = false);
 
-    dissem, evac, layers
+    dissem, probs, layers, evac
 end
 
 function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform(), pb = true)
-    data = [DF.DataFrame() for _ ∈ 1:3];
+    data = [DF.DataFrame() for _ ∈ 1:4];
 
     progress_bar = PM.Progress(n; enabled = pb);
 
@@ -303,7 +308,7 @@ function sensitivity_analysis(n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d; pb = true
 end
 
 function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d; pb = true)
-    data = [DF.DataFrame() for _ ∈ 1:3];
+    data = [DF.DataFrame() for _ ∈ 1:4];
     u = Dist.Uniform();
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
