@@ -313,14 +313,15 @@ function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
-    for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, tᵣᵢ ∈ tᵣ
-        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(tᵣᵢ), d; u = u, pb = false);
+    for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, tᵣᵢ ∈ tᵣ, dᵢ ∈ d
+        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(tᵣᵢ), dᵢ; u = u, pb = false);
         DF.insertcols!.(newest, :n₀ => n₀ᵢ);
         DF.insertcols!.(newest, :p => pᵢ);
         DF.insertcols!.(newest, :pₗ => tuple(pₗᵢ));
         DF.insertcols!.(newest, :tₗ => tuple(tₗᵢ));
         DF.insertcols!.(newest, :c => cᵢ);
         DF.insertcols!.(newest, :tᵣ => tᵣᵢ);
+        DF.insertcols!.(newest, :d => dᵢ);
 
         DF.append!.(data, newest);
 
