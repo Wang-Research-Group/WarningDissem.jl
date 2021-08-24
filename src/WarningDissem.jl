@@ -332,8 +332,20 @@ function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d
 end
 
 namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
-
 namedtuple_to_string(nt::NamedTuple, nt_keys)::String = join(map(k -> string(k) * " = " * string(nt[k]), nt_keys), ", ");
+
+"""
+Not needed for anything; a convenience function. Returns a subset of the key-value pairs in d where the key != x.
+"""
+except(d, x) = filter(i -> i.first != x, d);
+except(d, x::Vector) = filter(i -> i.first ∉ x, d);
+
+"""
+Returns a subset of the dataframe `df` based on the dictionary `d`.
+`d`: A dictionary of `key => [value]` pairs where `[value]` is the range of accepted values in the column `key`.
+     Essentially an OR operation in `[value]` and an AND operation with the keys to determine which rows to keep.
+"""
+subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
 
 function draw_disseminate(ax, df; kwargs...)
     Makie.lines!(ax, df.t, df.dissem; kwargs...);
