@@ -7,6 +7,7 @@ import Distributions
 import DataFrames
 import DataStructures
 import CSV
+import JLSO
 import GLMakie, Colors
 import ProgressMeter
 
@@ -360,12 +361,12 @@ end
 
 function draw_monte_carlo(ax, df)
     for dfᵢ ∈ DF.groupby(df, :run)
-        draw_disseminate(ax, dfᵢ; color = Colors.RGBA(0., 0., 0., .1));
+        draw_disseminate(ax, dfᵢ; color = Colors.RGBA(0., 0., 0., .5));
     end
 end
 
 function draw_sensitivity_analysis(ax, df, x::Symbol)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ]));
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     Makie.scatter!(ax, agg_df[!, x], agg_df.dissem; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6);
 end
 
@@ -394,7 +395,7 @@ function draw_grid_monte_carlo(f, df, yx)
 end
 
 function draw_row_sensitivity_analysis(f, df, x, row)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ]));
+    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     gdf = DF.groupby(agg_df, row);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
@@ -415,6 +416,10 @@ function coverage(g)
     deg = LG.degree(g);
     1 - count(isequal(0), deg) / length(deg)
 end
+
+save(filepath, df) = JLSO.save(filepath, :data => df);
+
+load(filepath) = JLSO.load(filepath)[:data];
 
 fig = Makie.Figure();
 fig
