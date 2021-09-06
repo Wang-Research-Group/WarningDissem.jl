@@ -21,7 +21,6 @@ const PM = ProgressMeter;
 
 const Float = AbstractFloat;
 const Range = AbstractRange;
-#using Compose, GraphPlot
 
 """
 Since Julia still doesn't have an `unzip()`...
@@ -45,10 +44,11 @@ Output:
 """
 window(x, len) = view.(Ref(x), (:).(1:length(x) - (len - 1), len:length(x)));
 
-function initnet!(G)
+initnet!(G) = initnet!(G, [.43, .39, .48]);
+
+function initnet!(G, layer_trusts)
     # All vertex properties are set in the first layer only
     g = G[1];
-    layer_trusts = [.43, .39, .48];
     for v ∈ LG.vertices(g)
         neighbors = LG.neighbors.(G, v);
         trust = Iterators.flatten(map(enumerate(neighbors)) do (i, neighbor_set)
@@ -58,9 +58,11 @@ function initnet!(G)
     end
 end
 
+makenet() = makenet(10, .7, "wom_coords.csv", 60., .374, 105);
+
 function makenet(phoneₖ, phoneᵦ, wom_file, womₘₐₓ, smₙ₀, smₖ)
     # [Phone, Word of Mouth, Social Media]
-    wom, dists = begin
+    wom, _ = begin
         coords = CSV.File(joinpath("data", wom_file); types = [Float64, Float64]) |> DF.DataFrame;
         coord_matrix = collect(Matrix(coords)');
         LG.euclidean_graph(coord_matrix; cutoff = womₘₐₓ)
@@ -348,8 +350,10 @@ Returns a subset of the dataframe `df` based on the dictionary `d`.
 """
 subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
 
-function draw_disseminate(ax, df; kwargs...)
-    Makie.lines!(ax, df.t, df.dissem; kwargs...);
+draw_disseminate(ax, df; kwargs...) = draw_run(ax, df, :dissem; kwargs...);
+
+function draw_run(ax, df, y; kwargs...)
+    Makie.lines!(ax, df.t, df[!, y]; kwargs...);
 end
 
 function draw_layers(ax, df; kwargs...)
@@ -359,18 +363,24 @@ function draw_layers(ax, df; kwargs...)
     Makie.axislegend(ax; unique = true);
 end
 
-function draw_monte_carlo(ax, df)
-    for dfᵢ ∈ DF.groupby(df, :run)
-        draw_disseminate(ax, dfᵢ; color = Colors.RGBA(0., 0., 0., .5));
+draw_monte_carlo(ax, df; sortby = [], opacity = .1) = draw_monte_carlo(ax, df, :dissem; sortby, opacity);
+
+function draw_monte_carlo(ax, df, y; sortby = [], opacity = .1)
+    for dfᵢ ∈ DF.groupby(df, [:run, sortby...])
+        draw_run(ax, dfᵢ, y; color = Colors.RGBA(0., 0., 0., opacity));
     end
 end
 
-function draw_sensitivity_analysis(ax, df, x::Symbol)
+draw_sensitivity_analysis(ax, df, x::Symbol; kwargs...) = draw_sensitivity_analysis(ax, df, x, :dissem; kwargs...);
+
+function draw_sensitivity_analysis(ax, df, x::Symbol, y::Symbol; kwargs...)
     agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
-    Makie.scatter!(ax, agg_df[!, x], agg_df.dissem; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6);
+    Makie.scatter!(ax, agg_df[!, x], agg_df[!, y]; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6, marker = 'o', kwargs...);
 end
 
-function draw_grid_monte_carlo(f, df, yx)
+draw_grid_monte_carlo(f, df, yx; sortby = [], opacity = .1) = draw_grid_monte_carlo(f, df, yx, :dissem; sortby, opacity);
+
+function draw_grid_monte_carlo(f, df, yx, y; sortby = [], opacity = .1)
     gdf = DF.groupby(df, yx; sort = true);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple(yx));
@@ -390,20 +400,23 @@ function draw_grid_monte_carlo(f, df, yx)
         ax.ylabel = "Nodes Informed";
     end
     for (ax, dfᵢ) ∈ zip(axs, gdf)
-        draw_monte_carlo(ax, dfᵢ);
+        draw_monte_carlo(ax, dfᵢ, y; sortby, opacity);
     end
 end
 
-function draw_row_sensitivity_analysis(f, df, x, row)
+draw_row_sensitivity_analysis(f, df, x, row; kwargs...) = draw_row_sensitivity_analysis(f, df, x, row, :dissem; kwargs...);
+
+function draw_row_sensitivity_analysis(f, df, x, row, y; kwargs...)
     agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     gdf = DF.groupby(agg_df, row);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
 
     axs = [Makie.Axis(f[1, i], xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
+    Makie.linkaxes!(axs...);
     axs[1].ylabel = "Total Nodes Informed";
     for (ax, dfᵢ) ∈ zip(axs, gdf)
-        draw_sensitivity_analysis(ax, dfᵢ, x);
+        draw_sensitivity_analysis(ax, dfᵢ, x, y; kwargs...);
     end
 end
 
