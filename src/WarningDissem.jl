@@ -28,7 +28,7 @@ Since Julia still doesn't have an `unzip()`...
 unzip(a) = map(x -> getfield.(a, x), (fieldnames ∘ eltype)(a));
 
 """
-A view into an array so you can see more than one element at once.
+A view into an array so you can see more than one element at once.[^ref]
 
 Example:
 ```
@@ -41,12 +41,12 @@ Output:
   [2, 3]
   [3, 4]
 ```
+
+[^ref]: Mostly pulled from https://stackoverflow.com/a/63769989
 """
 window(x, len) = view.(Ref(x), (:).(1:length(x) - (len - 1), len:length(x)));
 
-initnet!(G) = initnet!(G, [.43, .39, .48]);
-
-function initnet!(G, layer_trusts)
+function initnet!(G, layer_trusts = [.43, .39, .48])
     # All vertex properties are set in the first layer only
     g = G[1];
     for v ∈ LG.vertices(g)
@@ -363,24 +363,18 @@ function draw_layers(ax, df; kwargs...)
     Makie.axislegend(ax; unique = true);
 end
 
-draw_monte_carlo(ax, df; sortby = [], opacity = .1) = draw_monte_carlo(ax, df, :dissem; sortby, opacity);
-
-function draw_monte_carlo(ax, df, y; sortby = [], opacity = .1)
+function draw_monte_carlo(ax, df, y = :dissem; sortby = [], opacity = .1)
     for dfᵢ ∈ DF.groupby(df, [:run, sortby...])
         draw_run(ax, dfᵢ, y; color = Colors.RGBA(0., 0., 0., opacity));
     end
 end
 
-draw_sensitivity_analysis(ax, df, x::Symbol; kwargs...) = draw_sensitivity_analysis(ax, df, x, :dissem; kwargs...);
-
-function draw_sensitivity_analysis(ax, df, x::Symbol, y::Symbol; kwargs...)
+function draw_sensitivity_analysis(ax, df, x::Symbol, y::Symbol = :dissem; kwargs...)
     agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     Makie.scatter!(ax, agg_df[!, x], agg_df[!, y]; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6, marker = 'o', kwargs...);
 end
 
-draw_grid_monte_carlo(f, df, yx; sortby = [], opacity = .1) = draw_grid_monte_carlo(f, df, yx, :dissem; sortby, opacity);
-
-function draw_grid_monte_carlo(f, df, yx, y; sortby = [], opacity = .1)
+function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1)
     gdf = DF.groupby(df, yx; sort = true);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple(yx));
@@ -404,9 +398,7 @@ function draw_grid_monte_carlo(f, df, yx, y; sortby = [], opacity = .1)
     end
 end
 
-draw_row_sensitivity_analysis(f, df, x, row; kwargs...) = draw_row_sensitivity_analysis(f, df, x, row, :dissem; kwargs...);
-
-function draw_row_sensitivity_analysis(f, df, x, row, y; kwargs...)
+function draw_row_sensitivity_analysis(f, df, x, row, y = :dissem; kwargs...)
     agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     gdf = DF.groupby(agg_df, row);
     params = keys(gdf);
