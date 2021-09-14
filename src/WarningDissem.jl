@@ -11,6 +11,11 @@ import JLSO
 import GLMakie, Colors
 import ProgressMeter
 
+export makenet, disseminate, monte_carlo, sensitivity_analysis
+export except, subsetresults, avgdeg, coverage
+export draw_disseminate, draw_run, draw_layers, draw_monte_carlo, draw_sensitivity_analysis, draw_grid_monte_carlo, draw_row_sensitivity_analysis
+export save, load
+
 const LG = LightGraphs;
 const MG = MetaGraphs;
 const Dist = Distributions;
@@ -19,47 +24,57 @@ const DS = DataStructures;
 const Makie = GLMakie;
 const PM = ProgressMeter;
 
-const Float = AbstractFloat;
-const Range = AbstractRange;
-
 """
-Since Julia still doesn't have an `unzip()`...
+    unzip(a)
+
+Break apart `a` into two collections.
+
+Since Julia still doesn't have an `unzip()` as of 1.6. This function may become unnecessary in the future.
 """
 unzip(a) = map(x -> getfield.(a, x), (fieldnames ∘ eltype)(a));
 
 """
-A view into an array so you can see more than one element at once.[^ref]
+    window(x, len)
 
-Example:
-```
-a = [1, 2, 3, 4];
-window(a, 2)
-```
-Output:
-```
-  [1, 2]
-  [2, 3]
-  [3, 4]
+Return a view into an array so you can see more than one element at once.[^src]
+
+# Examples
+```jldoctest
+julia> WarningDissem.window([1, 2, 3, 4], 2)
+3-element Vector{SubArray{Int64, 1, Vector{Int64}, Tuple{UnitRange{Int64}}, true}}:
+ [1, 2]
+ [2, 3]
+ [3, 4]
 ```
 
-[^ref]: Mostly pulled from https://stackoverflow.com/a/63769989
+[^src]: Mostly pulled from [Stack Overflow](https://stackoverflow.com/a/63769989)
 """
 window(x, len) = view.(Ref(x), (:).(1:length(x) - (len - 1), len:length(x)));
 
-function initnet!(G, layer_trusts = [.43, .39, .48])
+"""
+    initnet!(G[, layertrusts])
+
+Initialize a network `G` with node properties such as trust.
+
+All properties are only set to the first layer of the network.
+"""
+function initnet!(G, layertrusts = [.43, .39, .48])
     # All vertex properties are set in the first layer only
     g = G[1];
     for v ∈ LG.vertices(g)
         neighbors = LG.neighbors.(G, v);
-        trust = Iterators.flatten(map(enumerate(neighbors)) do (i, neighbor_set)
-            map(neighbor -> ((neighbor, i), layer_trusts[i]), neighbor_set)
+        trust = Iterators.flatten(map(enumerate(neighbors)) do (i, neighborset)
+            map(neighbor -> ((neighbor, i), layertrusts[i]), neighborset)
         end) |> Dict;
         MG.set_prop!(g, v, :state, NodeState(trust));
     end
 end
 
-makenet() = makenet(10, .7, "wom_coords.csv", 60., .374, 105);
+"""
+    makenet(phoneₖ, phoneᵦ, wom_file, womₘₐₓ, smₙ₀, smₖ)
 
+Create a network.
+"""
 function makenet(phoneₖ, phoneᵦ, wom_file, womₘₐₓ, smₙ₀, smₖ)
     # [Phone, Word of Mouth, Social Media]
     wom, _ = begin
@@ -77,53 +92,141 @@ function makenet(phoneₖ, phoneᵦ, wom_file, womₘₐₓ, smₙ₀, smₖ)
 end
 
 """
+    makenet()
+
+Provide defaults from the literature.
+"""
+makenet() = makenet(10, .7, "wom_coords.csv", 60., .374, 105);
+
+"""
+    sample(x)
+
+Return `x`.
+
 Since many of the parameters to `disseminate()` can take either a distribution or a value, we should
 have something that samples the distribution if that's what's provided, or just returns the value.
-NB: None of the results from this can be negative, so if that's something you need then either offset
-    the results outside of this function or add another version that doesn't clamp it.
+"""
+sample(x) = x;
+
+"""
+    sample(x::Distribution)
+
+Return a singular sample of `x`.
 """
 sample(x::Dist.Distribution) = Dist.rand(x);
-sample(x) = x;
-sample(x::Dist.Distribution, n) = Dist.rand(x, n);
+
+"""
+    sample(x, n)
+
+Return an array of length `n` filled with `x`.
+"""
 sample(x, n) = fill(x, n);
 
 """
-`dₜ`: Time remaining until disaster
-`tₗ`: Array of time it takes to share info on each layer
-`conf`: Confidence in the info
+    sample(x::Distribution, n)
+
+Sample `x`, `n` times.
+"""
+sample(x::Dist.Distribution, n) = Dist.rand(x, n);
+
+@doc raw"""
+    shareprob(p)
+
+Provide a probability the individual will share.
+
+Return a function matching the following equation:
+```math
+p(dₜ, tₗ, c) = c × p₀ × \text{max}\left(1 - \frac{\text{min}(tₗ)}{\text{max}(dₜ, 0)}, 0\right)
+```
+where max``(x, 0)`` ensures no negative numbers,
+min``(x)`` returns the smallest value in ``x``,
+``p₀`` is an initial starting probability,
+``dₜ`` is the time remaining until the disaster,
+``tₗ`` is an array of time it takes to share info on each layer, and
+``c`` is the confidence in the info.
+
+The only parameter to this function is ``p₀``. The result of this function is meant to be passed in to
+`disseminate()` as the parameter `p`.
 """
 function shareprob(p)
-    function (dₜ, tₗ, conf)
-        conf * p * max(1 - (minimum ∘ broadcast)(sample, tₗ) / max(dₜ, 0), 0)
+    function (dₜ, tₗ, c)
+        c * p * max(1 - (minimum ∘ broadcast)(sample, tₗ) / max(dₜ, 0), 0)
     end
 end
 
-function layerprob(base)
+@doc raw"""
+    layerprob(b)
+
+Provide a probability an individual will share on each layer.
+
+Return a function matching the following equation:
+```math
+pₗ(dₜ, tₗ) = \text{norm}\left(b × \text{max}\left(1 - \frac{tₗ}{\text{max}(dₜ, 0)}, 0\right)\right)
+```
+where max``(x, 0)`` ensures no negative numbers,
+all operations are element-wise across vectors,
+norm``(x)`` normalizes the vector ``x`` so its elements sum to 1,
+``b`` is an initial starting probability vector whose elements sum to 1,
+``dₜ`` is the time remaining until the disaster, and
+``tₗ`` is an array of time it takes to share info on each layer.
+
+The only parameter to this function is ``b``. The result of this function is meant to be passed in to
+`disseminate()` as the parameter `pₗ`.
+"""
+function layerprob(b)
     function (dₜ, tₗ)
-        unscaled = @. base * max(1 - sample(tₗ) / max(dₜ, 0), 0);
+        unscaled = @. b * max(1 - sample(tₗ) / max(dₜ, 0), 0);
         unscaled ./ sum(unscaled)
     end
 end
 
+@doc raw"""
+    conflevel(cₙ)
+
+Provide the confidence an individual has on a piece of info.
+
+Return a function matching the following equation:
+```math
+c(cₛ, wₗ) = \text{clamp}\left(\frac{\text{trust}(cₛ, wₗ)}{cₙ + 1}, 0, 1\right)
+```
+where clamp``(x, 0, 1)`` enforces results between 0 and 1,
+trust``(cₛ, wₗ)`` retrieves the sum of trust weights for the number of times/layers the individual has been informed through,
+``cₙ`` is the expected number of times the individual will need to confirm information before sharing it if they completely trust their sources,
+``cₛ`` is the number of times/layers the individual has been informed through, and
+``wₗ`` is a collection of trust levels for each layer.
+
+The only parameter to this function is `cₙ`. The return value of the returned function ranges between 0 and 1. The returned function is meant to
+be passed in to `disseminate()` as the parameter `c`.
+"""
 function conflevel(cₙ)
-    function (informed, trust)
+    function (cₛ, wₗ)
         # If informed by the broadcast, have the highest confidence level
-        if ismissing(informed[1][1])
+        if ismissing(cₛ[1][1])
             return 1.
         end
-        x = map(i -> trust[i], informed);
+        x = map(i -> wₗ[i], cₛ);
         clamp(sum(x) / (cₙ + 1), 0, 1)
     end
 end
 
-"""
-`dₜ`: Time until the disaster occurs
-    Range: [0, ∞) (actually could be passed in as a neg number, but clamp enforces this range for the calc)
-`c`: Confidence in the information
-    Range: [0, 1]
+@doc raw"""
+    evac(tᵣ)
 
-`tᵣ` is the max time that anyone would evac at; this is a linear scale to 0, so if 100% confident in the info
-then a 50% chance to evac would be `tᵣ`/2 and a 100% chance would be 0.
+Provide the likelihood an individual will evacuate.
+
+Return a function matching the following equation:
+```math
+r(dₜ, c) = c × \left(1 - \text{clamp}\left(\frac{dₜ}{tᵣ}, 0, 1\right)\right)
+```
+where clamp``(x, 0, 1)`` enforces results between 0 and 1,
+``tᵣ`` is the maximum time at which anyone would evacuate,
+``dₜ`` is the time remaining until the disaster, and
+``c`` is the confidence in the info.
+
+The only parameter to this function is `tᵣ`. This parameter is a linear scale to 0, so if 100% confident in the info
+then a 50% chance to evac would be ``tᵣ/2`` mins remaining until the disaster and a 100% chance would be 0.
+
+The result of this function is meant to be passed in to `disseminate()` as the parameter `r`.
 """
 function evac(tᵣ)
     function (dₜ, c)
@@ -132,33 +235,43 @@ function evac(tᵣ)
 end
 
 """
-Every node has an instance of this struct associated with it
+    NodeState(comm::Bool, evac::Bool, informed::Vector, trust::Dict)
 
-`comm`: If I've started communicating already
-`informed`: The list of nodes who have informed me
-`trust`: A dictionary of how much I trust neighboring nodes (keys are tuples of (node, layer))
+The state of each individual.
+
+Every node has an instance of this struct associated with it on the first layer.
 """
 mutable struct NodeState
+    "If I've started communicating already."
     comm::Bool
+    "If I've started evacuating already."
     evac::Bool
+    "The collection of individuals who have informed me."
     informed::Vector
+    "A dictionary of how much I trust neighboring individuals (keys are tuples of `(node, layer)`)."
     trust::Dict
 end
 
+"""
+    NodeState(trust::Dict)
+
+The initial state of a node: haven't started communicating, haven't started evacuating, no one has informed me.
+"""
 NodeState(trust::Dict) = NodeState(false, false, [], trust);
 
 """
-Properties of a communication between nodes
+    Comm(t::AbstractFloat, t₀::AbstractFloat, src, srcₗ::Union{Int,Missing})
 
-`t`: When the communication ends
-`t₀`: When the communication starts
-`src`: The node that transmits the information
-`srcₗ`: The layer index of the communication (`Missing` if the communication is from the initial broadcast)
+Properties of a communication between nodes.
 """
 struct Comm
-    t::Float
-    t₀::Float
+    "When the communication ends."
+    t::AbstractFloat
+    "When the communication starts."
+    t₀::AbstractFloat
+    "The node that transmits the information."
     src
+    "The layer index of the communication (`Missing` if the communication is from the initial broadcast)."
     srcₗ::Union{Int, Missing}
 end
 
@@ -167,15 +280,32 @@ Base.isless(a::Comm, b::Comm) = isless((a.t, a.t₀), (b.t, b.t₀));
 Base.isequal(a::Comm, b::Comm) = isequal((a.t, a.t₀), (b.t, b.t₀));
 
 """
+    hist2cmf(df::DataFrame, col, agg_col)
+
+Convert data in a histogram format to a CMF (cumulative mass function) format.
+
 Given a dataframe (`df`) and a column of that dataframe (`col`), this function counts duplicates and
-performs a cumulative sum. Essentially a conversion from a histogram to a cmf.
+performs a cumulative sum.
+
 `agg_col` is the name of the new aggregate column.
 """
 hist2cmf(df::DF.DataFrame, col, agg_col) = DF.transform(DF.combine(DF.groupby(df, col), DF.nrow => agg_col), agg_col => cumsum; renamecols = false);
 
 """
-Parameter `u` is always the uniform distribution, but we pass it in so that the distribution doesn't
-have to be recreated on every run of the dissemination simulation
+    disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u=Uniform())
+
+Simulate dissemination of emergency warning info through a network `G`.
+
+# Arguments
+- `G::Vector`: a vector of `MetaGraph`s where each graph is a layer of the multiplex network. Only the first layer has node properties.
+- `n₀::Int`: the initial broadcast size.
+- `p`: a function to compute the likelihood of sharing info. (For more details, reference [`shareprob`](@ref).)
+- `pₗ`: a function to compute the likelihood of sharing info on each layer. (For more details, reference [`layerprob`](@ref).)
+- `tₗ`: a collection of times it will take to share info on each layer. Can be a collection of distributions and/or singular values.
+- `c`: a function to compute the confidence of the individual on the new info. (For more details, reference [`conflevel`](@ref).)
+- `r`: a function to compute the likelihood of evacuating at this timestep. (For more details, reference [`evac`](@ref).)
+- `d`: the total amount of prewarning time before the disaster occurs.
+- `u=Uniform()`: the uniform distribution. We can pass it in so the distribution doesn't have to be recreated on every run of the dissemination simulation.
 """
 function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform())
     # These are the nodes we're starting from
@@ -265,9 +395,9 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         end
     end
 
-    dissem = hist2cmf(DF.DataFrame(t = Float.(informed_times)), :t, :dissem);
-    probs = hist2cmf(DF.DataFrame(t = Float.(prob_times)), :t, :prob);
-    evac = hist2cmf(DF.DataFrame(t = Float.(evac_times)), :t, :evac);
+    dissem = hist2cmf(DF.DataFrame(t = AbstractFloat.(informed_times)), :t, :dissem);
+    probs = hist2cmf(DF.DataFrame(t = AbstractFloat.(prob_times)), :t, :prob);
+    evac = hist2cmf(DF.DataFrame(t = AbstractFloat.(evac_times)), :t, :evac);
 
     # Form layer dissemination data in a more convenient format
     layer_names = [:phone, :wom, :sm];
@@ -317,7 +447,7 @@ function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
     for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, tᵣᵢ ∈ tᵣ, dᵢ ∈ d
-        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(tᵣᵢ), dᵢ; u = u, pb = false);
+        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(tᵣᵢ), dᵢ; u, pb = false);
         DF.insertcols!.(newest, :n₀ => n₀ᵢ);
         DF.insertcols!.(newest, :p => pᵢ);
         DF.insertcols!.(newest, :pₗ => tuple(pₗᵢ));
@@ -385,7 +515,7 @@ function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1
     axs = [];
     for i ∈ 1:y_len, j ∈ 1:x_len
         count = (i - 1) * x_len + j;
-        push!(axs, Makie.Axis(f[i, j], title = titles[count]));
+        push!(axs, Makie.Axis(f[i, j]; title = titles[count]));
     end
     for ax ∈ axs[(end - x_len + 1):end]
         ax.xlabel = "t";
@@ -404,7 +534,7 @@ function draw_row_sensitivity_analysis(f, df, x, row, y = :dissem; kwargs...)
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
 
-    axs = [Makie.Axis(f[1, i], xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
+    axs = [Makie.Axis(f[1, i]; xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
     Makie.linkaxes!(axs...);
     axs[1].ylabel = "Total Nodes Informed";
     for (ax, dfᵢ) ∈ zip(axs, gdf)
