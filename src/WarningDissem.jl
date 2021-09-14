@@ -504,30 +504,6 @@ Identifies the keys of the named tuple at runtime.
 namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
 
 """
-    except(d, x)
-
-Return a subset of the key-value pairs in `d` where the key ≠ `x`.
-"""
-except(d, x) = filter(i -> i.first ≠ x, d);
-
-"""
-    except(d, x::Vector)
-
-Return a subset of the key-value pairs in `d` where the key ∉ `x`.
-"""
-except(d, x::Vector) = filter(i -> i.first ∉ x, d);
-
-"""
-    subsetresults(df, d)
-
-Return a subset of the dataframe `df` based on the dictionary `d`.
-
-`d` is a dictionary of `key => [value]` pairs where `[value]` is the range of accepted values in the column `key`.
-Essentially an OR operation in `[value]` and an AND operation with the keys to determine which rows to keep.
-"""
-subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
-
-"""
     draw_run(ax, df, y; kwargs...)
 
 Draw the results of a simulation in DataFrame `df` on axis `ax`.
@@ -654,6 +630,30 @@ function draw_row_sensitivity_analysis(f, df, x, row, y = :dissem; kwargs...)
         draw_sensitivity_analysis(ax, dfᵢ, x, y; kwargs...);
     end
 end
+
+"""
+    except(d, x)
+
+Return a subset of the key-value pairs in `d` where the key ≠ `x`.
+"""
+except(d, x) = filter(i -> i.first ≠ x, d);
+
+"""
+    except(d, x::Vector)
+
+Return a subset of the key-value pairs in `d` where the key ∉ `x`.
+"""
+except(d, x::Vector) = filter(i -> i.first ∉ x, d);
+
+"""
+    subsetresults(df, d)
+
+Return a subset of the dataframe `df` based on the dictionary `d`.
+
+`d` is a dictionary of `key => [value]` pairs where `[value]` is the range of accepted values in the column `key`.
+Essentially an OR operation in `[value]` and an AND operation with the keys to determine which rows to keep.
+"""
+subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
 
 """
     avgdeg(g)
