@@ -146,7 +146,7 @@ min``(x)`` returns the smallest value in ``x``,
 ``c`` is the confidence in the info.
 
 The only parameter to this function is ``p₀``. The result of this function is meant to be passed in to
-`disseminate()` as the parameter `p`.
+[`disseminate`](@ref) as the parameter `p`.
 """
 function shareprob(p)
     function (dₜ, tₗ, c)
@@ -171,7 +171,7 @@ norm``(x)`` normalizes the vector ``x`` so its elements sum to 1,
 ``tₗ`` is an array of time it takes to share info on each layer.
 
 The only parameter to this function is ``b``. The result of this function is meant to be passed in to
-`disseminate()` as the parameter `pₗ`.
+[`disseminate`](@ref) as the parameter `pₗ`.
 """
 function layerprob(b)
     function (dₜ, tₗ)
@@ -196,7 +196,7 @@ trust``(cₛ, wₗ)`` retrieves the sum of trust weights for the number of times
 ``wₗ`` is a collection of trust levels for each layer.
 
 The only parameter to this function is `cₙ`. The return value of the returned function ranges between 0 and 1. The returned function is meant to
-be passed in to `disseminate()` as the parameter `c`.
+be passed in to [`disseminate`](@ref) as the parameter `c`.
 """
 function conflevel(cₙ)
     function (cₛ, wₗ)
@@ -226,7 +226,7 @@ where clamp``(x, 0, 1)`` enforces results between 0 and 1,
 The only parameter to this function is `tᵣ`. This parameter is a linear scale to 0, so if 100% confident in the info
 then a 50% chance to evac would be ``tᵣ/2`` mins remaining until the disaster and a 100% chance would be 0.
 
-The result of this function is meant to be passed in to `disseminate()` as the parameter `r`.
+The result of this function is meant to be passed in to [`disseminate`](@ref) as the parameter `r`.
 """
 function evac(tᵣ)
     function (dₜ, c)
@@ -298,7 +298,7 @@ Simulate dissemination of emergency warning info through a network `G`.
 
 # Arguments
 - `G::Vector`: a vector of `MetaGraph`s where each graph is a layer of the multiplex network. Only the first layer has node properties.
-- `n₀::Int`: the initial broadcast size.
+- `n₀::Int`: the initial broadcast size. Must be ≤ the number of nodes in the network.
 - `p`: a function to compute the likelihood of sharing info. (For more details, reference [`shareprob`](@ref).)
 - `pₗ`: a function to compute the likelihood of sharing info on each layer. (For more details, reference [`layerprob`](@ref).)
 - `tₗ`: a collection of times it will take to share info on each layer. Can be a collection of distributions and/or singular values.
@@ -419,6 +419,14 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
     dissem, probs, layers, evac
 end
 
+"""
+    monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u=Uniform(), pb=true)
+
+Perform a Monte Carlo iteration of [`disseminate`](@ref) `n` times.
+
+Keyword parameter `pb` indicates if a progress bar will be shown in the REPL. All parameters besides `pb` and `n`
+can be found in the help of [`disseminate`](@ref).
+"""
 function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform(), pb = true)
     data = [DF.DataFrame() for _ ∈ 1:4];
 
@@ -435,25 +443,32 @@ function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Di
     data
 end
 
-function sensitivity_analysis(n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d; pb = true)
-    G = makenet(10, .7, "wom_coords.csv", 60., .374, 105);
-    sensitivity_analysis(G, n, n₀, p, pₗ, tₗ, c, tᵣ, d; pb)
-end
+"""
+    sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, r, d; pb=true)
 
-function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d; pb = true)
+Perform a sensitivity analysis on the dissemination simulation by varying parameters.
+
+All parameters except for `G`, `n`, and `pb` can be provided as a range or collection of options. A singular value indicates
+not to conduct analysis on that parameter. Parameters which are already collections (`pₗ` and `tₗ`) require an additional
+collection wrapping even if they will not be analyzed.
+
+`p`, `pₗ`, `c`, and `r` represent the default values to the functions [`shareprob`](@ref), [`layerprob`](@ref),
+[`conflevel`](@ref), and [`evac`](@ref), not the functions themselves. However, this would be an easy change.
+"""
+function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, r, d; pb = true)
     data = [DF.DataFrame() for _ ∈ 1:4];
     u = Dist.Uniform();
 
     progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
 
-    for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, tᵣᵢ ∈ tᵣ, dᵢ ∈ d
-        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(tᵣᵢ), dᵢ; u, pb = false);
+    for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, rᵢ ∈ r, dᵢ ∈ d
+        newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(rᵢ), dᵢ; u, pb = false);
         DF.insertcols!.(newest, :n₀ => n₀ᵢ);
         DF.insertcols!.(newest, :p => pᵢ);
         DF.insertcols!.(newest, :pₗ => tuple(pₗᵢ));
         DF.insertcols!.(newest, :tₗ => tuple(tₗᵢ));
         DF.insertcols!.(newest, :c => cᵢ);
-        DF.insertcols!.(newest, :tᵣ => tᵣᵢ);
+        DF.insertcols!.(newest, :r => rᵢ);
         DF.insertcols!.(newest, :d => dᵢ);
 
         DF.append!.(data, newest);
@@ -464,28 +479,81 @@ function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, tᵣ, d
     data
 end
 
-namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
+"""
+    sensitivity_analysis(n::Int, n₀, p, pₗ, tₗ, c, r, d; pb=true)
+
+Provides a default network to the sensitivity analysis.
+"""
+function sensitivity_analysis(n::Int, n₀, p, pₗ, tₗ, c, r, d; pb = true)
+    G = makenet();
+    sensitivity_analysis(G, n, n₀, p, pₗ, tₗ, c, r, d; pb)
+end
+
+"""
+    namedtuple_to_string(nt::NamedTuple, nt_keys)
+
+Convert a named tuple with keys `nt_keys` to a string.
+"""
 namedtuple_to_string(nt::NamedTuple, nt_keys)::String = join(map(k -> string(k) * " = " * string(nt[k]), nt_keys), ", ");
 
 """
-Not needed for anything; a convenience function. Returns a subset of the key-value pairs in d where the key != x.
+    namedtuple_to_string(nt::NamedTuple)
+
+Identifies the keys of the named tuple at runtime.
 """
-except(d, x) = filter(i -> i.first != x, d);
+namedtuple_to_string(nt::NamedTuple)::String = namedtuple_to_string(nt, keys(nt));
+
+"""
+    except(d, x)
+
+Return a subset of the key-value pairs in `d` where the key ≠ `x`.
+"""
+except(d, x) = filter(i -> i.first ≠ x, d);
+
+"""
+    except(d, x::Vector)
+
+Return a subset of the key-value pairs in `d` where the key ∉ `x`.
+"""
 except(d, x::Vector) = filter(i -> i.first ∉ x, d);
 
 """
-Returns a subset of the dataframe `df` based on the dictionary `d`.
-`d`: A dictionary of `key => [value]` pairs where `[value]` is the range of accepted values in the column `key`.
-     Essentially an OR operation in `[value]` and an AND operation with the keys to determine which rows to keep.
+    subsetresults(df, d)
+
+Return a subset of the dataframe `df` based on the dictionary `d`.
+
+`d` is a dictionary of `key => [value]` pairs where `[value]` is the range of accepted values in the column `key`.
+Essentially an OR operation in `[value]` and an AND operation with the keys to determine which rows to keep.
 """
 subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
 
-draw_disseminate(ax, df; kwargs...) = draw_run(ax, df, :dissem; kwargs...);
+"""
+    draw_run(ax, df, y; kwargs...)
 
+Draw the results of a simulation in DataFrame `df` on axis `ax`.
+
+`y` is the heading of the results column. This function can take any keyword arguments which work for `Makie`'s plotting.
+"""
 function draw_run(ax, df, y; kwargs...)
     Makie.lines!(ax, df.t, df[!, y]; kwargs...);
 end
 
+"""
+    draw_disseminate(ax, df; kwargs...)
+
+Draw the results of a dissemination simulation in DataFrame `df` on axis `ax`.
+
+This function can take any keyword arguments which work for `Makie`'s plotting.
+"""
+draw_disseminate(ax, df; kwargs...) = draw_run(ax, df, :dissem; kwargs...);
+
+"""
+    draw_layers(ax, df; kwargs...)
+
+Draw the use of the layers in a simulation in DataFrame `df` on axis `ax`.
+
+This function can take any keyword arguments which work for `Makie`'s plotting.
+"""
 function draw_layers(ax, df; kwargs...)
     Makie.lines!(ax, df.t, df.phone; label = "phone", kwargs...);
     Makie.lines!(ax, df.t, df.wom; label = "word of mouth", kwargs...);
@@ -493,18 +561,53 @@ function draw_layers(ax, df; kwargs...)
     Makie.axislegend(ax; unique = true);
 end
 
-function draw_monte_carlo(ax, df, y = :dissem; sortby = [], opacity = .1)
+"""
+    draw_monte_carlo(ax, df[, y]; sortby=[], opacity=.1, kwargs...)
+
+Draw the results of Monte Carlo iterations in DataFrame `df` on axis `ax`.
+
+`y` is the heading of the results column. If not provided, assume a dissemination simulation.
+
+Keyword parameter `sortby` provides any varying parameters. Otherwise, the end of one run and the start of another
+will likely be connected. `opacity` determines the opacity of the lines. This function can take any keyword arguments
+which work for `Makie`'s plotting.
+"""
+function draw_monte_carlo(ax, df, y = :dissem; sortby = [], opacity = .1, kwargs...)
     for dfᵢ ∈ DF.groupby(df, [:run, sortby...])
-        draw_run(ax, dfᵢ, y; color = Colors.RGBA(0., 0., 0., opacity));
+        draw_run(ax, dfᵢ, y; color = Colors.RGBA(0., 0., 0., opacity), kwargs...);
     end
 end
 
+"""
+    draw_sensitivity_analysis(ax, df, x::Symbol[, y::Symbol]; kwargs...)
+
+Draw the final total for each simulation as a single point.
+
+`x` is the variable for the horizontal axis and `y` is for the vertical axis. If `y` is not provided, assume a dissemination simulation.
+
+This function can take any keyword arguments which work for `Makie`'s plotting.
+"""
 function draw_sensitivity_analysis(ax, df, x::Symbol, y::Symbol = :dissem; kwargs...)
     agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     Makie.scatter!(ax, agg_df[!, x], agg_df[!, y]; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6, marker = 'o', kwargs...);
 end
 
-function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1)
+"""
+    draw_grid_monte_carlo(f, df, yx[, y]; sortby=[], opacity=.1, kwargs...)
+
+Draw a grid of plots of Monte Carlo iterations in DataFrame `df` on Figure `f`.
+
+`yx` is an ordered collection of size 2, where the first element is the changing variable across the rows and the
+second element is the changing variable across the columns.
+`y` is the heading of the results column. If not provided, assume a dissemination simulation.
+
+Keyword parameter `sortby` provides any varying parameters. Otherwise, the end of one run and the start of another
+will likely be connected. `opacity` determines the opacity of the lines. This function can take any keyword arguments
+which work for `Makie`'s plotting.
+
+Note that this function is best used with a `df` created from sensitivity analysis; otherwise, it'll do the same thing as [`draw_monte_carlo`](@ref).
+"""
+function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1, kwargs...)
     gdf = DF.groupby(df, yx; sort = true);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple(yx));
@@ -524,10 +627,20 @@ function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1
         ax.ylabel = "Nodes Informed";
     end
     for (ax, dfᵢ) ∈ zip(axs, gdf)
-        draw_monte_carlo(ax, dfᵢ, y; sortby, opacity);
+        draw_monte_carlo(ax, dfᵢ, y; sortby, opacity, kwargs...);
     end
 end
 
+"""
+    draw_row_sensitivity_analysis(f, df, x, row[, y]; kwargs...)
+
+Draw a row of plots of sensitivity analysis in DataFrame `df` on Figure `f`.
+
+The variable changing on the horizontal axis within each plot is provided by `x`. The one changing across the plots is `row`.
+`y` is the heading of the results column. If not provided, assume a dissemination simulation.
+
+This function can take any keyword arguments which work for `Makie`'s plotting.
+"""
 function draw_row_sensitivity_analysis(f, df, x, row, y = :dissem; kwargs...)
     agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
     gdf = DF.groupby(agg_df, row);
@@ -542,24 +655,45 @@ function draw_row_sensitivity_analysis(f, df, x, row, y = :dissem; kwargs...)
     end
 end
 
+"""
+    avgdeg(g)
+
+Compute the average degree of nodes in graph `g`.
+"""
 function avgdeg(g)
     deg = LG.degree(g);
     sum(deg) / length(deg)
 end
 
+"""
+    coverage(g)
+
+Compute the percentage of nodes in graph `g` with at least one edge.
+"""
 function coverage(g)
     deg = LG.degree(g);
     1 - count(isequal(0), deg) / length(deg)
 end
 
+"""
+    save(filepath, df)
+
+Save the DataFrame `df` at location `filepath`.
+
+`filepath` must end with a `.jlso` extension.
+
+CSV files almost work with these dataframes, but they sometimes fail with the multilayer variables.
+"""
 save(filepath, df) = JLSO.save(filepath, :data => df);
 
+"""
+    load(filepath)
+
+Return a DataFrame provided by the `.jlso` file at location `filepath`.
+"""
 load(filepath) = JLSO.load(filepath)[:data];
 
-fig = Makie.Figure();
-fig
-
-#draw(SVG(joinpath("results", "test.svg")), gplot(g));
+# If you want to save your figures, use `Makie`'s `save()` function.
 #Makie.save(joinpath("results", "filename.png"), fig);
 
 end
