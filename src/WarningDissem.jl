@@ -1,35 +1,30 @@
 module WarningDissem
 
 # Write your package code here.
-import Random
-import LightGraphs, MetaGraphs
-import Distributions
-import DataFrames
-import DataStructures
-import CSV
+using Random: shuffle!
+using Graphs
+using MetaGraphs
+using Distributions
+using DataFrames
+using DataStructures
+using CSV: File
 import JLSO
-import GLMakie, Colors
-import ProgressMeter
+using GLMakie
+using Colors: RGBA
+using ProgressMeter: Progress, next!
 
 export makenet, disseminate, monte_carlo, sensitivity_analysis
+export shareprob, layerprob, conflevel, evac
 export except, subsetresults, avgdeg, coverage
 export draw_disseminate, draw_run, draw_layers, draw_monte_carlo, draw_sensitivity_analysis, draw_grid_monte_carlo, draw_row_sensitivity_analysis
 export save, load
-
-const LG = LightGraphs;
-const MG = MetaGraphs;
-const Dist = Distributions;
-const DF = DataFrames;
-const DS = DataStructures;
-const Makie = GLMakie;
-const PM = ProgressMeter;
 
 """
     unzip(a)
 
 Break apart `a` into two collections.
 
-Since Julia still doesn't have an `unzip()` as of 1.6. This function may become unnecessary in the future.
+Since Julia still doesn't have an `unzip()` as of 1.7. This function may become unnecessary in the future.
 """
 unzip(a) = map(x -> getfield.(a, x), (fieldnames ∘ eltype)(a));
 
@@ -61,12 +56,12 @@ All properties are only set to the first layer of the network.
 function initnet!(G, layertrusts = [.43, .39, .48])
     # All vertex properties are set in the first layer only
     g = G[1];
-    for v ∈ LG.vertices(g)
-        neighbors = LG.neighbors.(G, v);
-        trust = Iterators.flatten(map(enumerate(neighbors)) do (i, neighborset)
+    for v ∈ vertices(g)
+        nbrs = neighbors.(G, v);
+        trust = Iterators.flatten(map(enumerate(nbrs)) do (i, neighborset)
             map(neighbor -> ((neighbor, i), layertrusts[i]), neighborset)
         end) |> Dict;
-        MG.set_prop!(g, v, :state, NodeState(trust));
+        set_prop!(g, v, :state, NodeState(trust));
     end
 end
 
@@ -78,15 +73,15 @@ Create a network.
 function makenet(phoneₖ, phoneᵦ, wom_file, womₘₐₓ, smₙ₀, smₖ)
     # [Phone, Word of Mouth, Social Media]
     wom, _ = begin
-        coords = CSV.File(joinpath("data", wom_file); types = [Float64, Float64]) |> DF.DataFrame;
+        coords = File(joinpath("data", wom_file); types = [Float64, Float64]) |> DataFrame;
         coord_matrix = collect(Matrix(coords)');
-        LG.euclidean_graph(coord_matrix; cutoff = womₘₐₓ)
+        euclidean_graph(coord_matrix; cutoff = womₘₐₓ)
     end;
-    wom = MG.MetaGraph(wom);
+    wom = MetaGraph(wom);
 
-    n = LG.nv(wom);
-    phone = LG.watts_strogatz(n, phoneₖ, phoneᵦ) |> MG.MetaGraph;
-    sm = LG.barabasi_albert(n, ceil(smₙ₀ * n) |> Int, smₖ) |> MG.MetaGraph;
+    n = nv(wom);
+    phone = watts_strogatz(n, phoneₖ, phoneᵦ) |> MetaGraph;
+    sm = barabasi_albert(n, ceil(smₙ₀ * n) |> Int, smₖ) |> MetaGraph;
 
     [phone, wom, sm]
 end
@@ -113,7 +108,7 @@ sample(x) = x;
 
 Return a singular sample of `x`.
 """
-sample(x::Dist.Distribution) = Dist.rand(x);
+sample(x::Distribution) = rand(x);
 
 """
     sample(x, n)
@@ -127,7 +122,7 @@ sample(x, n) = fill(x, n);
 
 Sample `x`, `n` times.
 """
-sample(x::Dist.Distribution, n) = Dist.rand(x, n);
+sample(x::Distribution, n) = rand(x, n);
 
 @doc raw"""
     shareprob(p)
@@ -289,7 +284,7 @@ performs a cumulative sum.
 
 `agg_col` is the name of the new aggregate column.
 """
-hist2cmf(df::DF.DataFrame, col, agg_col) = DF.transform(DF.combine(DF.groupby(df, col), DF.nrow => agg_col), agg_col => cumsum; renamecols = false);
+hist2cmf(df::DataFrame, col, agg_col) = transform(combine(groupby(df, col), nrow => agg_col), agg_col => cumsum; renamecols = false);
 
 """
     disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u=Uniform())
@@ -297,33 +292,33 @@ hist2cmf(df::DF.DataFrame, col, agg_col) = DF.transform(DF.combine(DF.groupby(df
 Simulate dissemination of emergency warning info through a network `G`.
 
 # Arguments
-- `G::Vector`: a vector of `MetaGraph`s where each graph is a layer of the multiplex network. Only the first layer has node properties.
+- `G::Vector`: a vector of `MetaGraph`s where each graph is a layer of the multiplex network. Only the first layer has node properties. Can be created with [`makenet`](@ref).
 - `n₀::Int`: the initial broadcast size. Must be ≤ the number of nodes in the network.
 - `p`: a function to compute the likelihood of sharing info. (For more details, reference [`shareprob`](@ref).)
 - `pₗ`: a function to compute the likelihood of sharing info on each layer. (For more details, reference [`layerprob`](@ref).)
-- `tₗ`: a collection of times it will take to share info on each layer. Can be a collection of distributions and/or singular values.
+- `tₗ`: a collection of times it will take to share info on each layer (mins). Can be a collection of distributions and/or singular values.
 - `c`: a function to compute the confidence of the individual on the new info. (For more details, reference [`conflevel`](@ref).)
 - `r`: a function to compute the likelihood of evacuating at this timestep. (For more details, reference [`evac`](@ref).)
-- `d`: the total amount of prewarning time before the disaster occurs.
-- `u=Uniform()`: the uniform distribution. We can pass it in so the distribution doesn't have to be recreated on every run of the dissemination simulation.
+- `d`: the total amount of prewarning time before the disaster occurs (mins).
+- `u=Uniform()`: the uniform distribution. We can pass it in so the distribution doesn't have to be recreated on every run of the dissemination simulation. Don't change this unless you know what you're doing!
 """
-function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform())
+function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Distribution = Uniform())
     # These are the nodes we're starting from
-    nodes = Dist.sample(LG.vertices(G[1]), n₀; replace = false);
+    nodes = Distributions.sample(vertices(G[1]), n₀; replace = false);
 
-    events = DS.PriorityQueue();
-    DS.enqueue!.(tuple(events), nodes, tuple(Comm(0, 0, missing, missing)));
+    events = PriorityQueue();
+    enqueue!.(tuple(events), nodes, tuple(Comm(0, 0, missing, missing)));
     informed_times, prob_times, informed_layers, evac_times = [], [], Dict(:t => [], :layer => []), [];
 
     # Make sure all of the initial properties of the network are set
     initnet!(G);
 
     while !isempty(events)
-        node, comm = DS.dequeue_pair!(events);
+        node, comm = dequeue_pair!(events);
         t = comm.t;
 
         # This is a reference, so any changes will be made inside the graph as well
-        state = MG.get_prop(G[1], node, :state);
+        state = get_prop(G[1], node, :state);
 
         push!(state.informed, (comm.src, comm.srcₗ));
 
@@ -347,9 +342,9 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         if !state.evac && sample(u) ≤ (sample ∘ r)(d - t, conf)
             push!(evac_times, t);
 
-            for neighbor ∈ copy(LG.neighbors(G[2], node))
+            for neighbor ∈ copy(neighbors(G[2], node))
                 # Remove from word-of-mouth only
-                success = MG.rem_edge!(G[2], node, neighbor);
+                success = rem_edge!(G[2], node, neighbor);
                 if !success
                     error("Unable to remove node $node from word-of-mouth network (neighbor $neighbor)");
                 end
@@ -364,13 +359,13 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
             push!(prob_times, prob);
             # Pick a layer based on the weights of `pₗ`
             layer = searchsortedfirst((cumsum ∘ broadcast)(sample, pₗ(d - t, tₗ)), sample(u));
-            contacts = copy(LG.neighbors(G[layer], node));
+            contacts = copy(neighbors(G[layer], node));
 
             # If reaching out on social media, contact everyone at once
             comm_contacts = if layer == 3
                 zip(contacts, fill(sample(tₗ[layer]), length(contacts)))
             else
-                Random.shuffle!(contacts);
+                shuffle!(contacts);
 
                 # Determine start/end times for communicating with everyone, and zip in contacts
                 times = zip(contacts, window(vcat(0, (cumsum ∘ sample)(tₗ[layer], length(contacts))), 2));
@@ -387,7 +382,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
             for (i, tᵢ) in comm_contacts
                 # If they're already in the queue, that means they're currently being contacted
                 if i ∉ keys(events)
-                    DS.enqueue!(events, i, Comm(t + tᵢ, t, node, layer));
+                    enqueue!(events, i, Comm(t + tᵢ, t, node, layer));
                 end
             end
 
@@ -395,26 +390,26 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distr
         end
     end
 
-    dissem = hist2cmf(DF.DataFrame(t = AbstractFloat.(informed_times)), :t, :dissem);
-    probs = hist2cmf(DF.DataFrame(t = AbstractFloat.(prob_times)), :t, :prob);
-    evac = hist2cmf(DF.DataFrame(t = AbstractFloat.(evac_times)), :t, :evac);
+    dissem = hist2cmf(DataFrame(t = AbstractFloat.(informed_times)), :t, :dissem);
+    probs = hist2cmf(DataFrame(t = AbstractFloat.(prob_times)), :t, :prob);
+    evac = hist2cmf(DataFrame(t = AbstractFloat.(evac_times)), :t, :evac);
 
     # Form layer dissemination data in a more convenient format
     layer_names = [:phone, :wom, :sm];
-    temp = DF.DataFrame(informed_layers);
-    DF.transform!(temp, :layer => x -> getindex.(tuple(layer_names), x); renamecols = false);
+    temp = DataFrame(informed_layers);
+    transform!(temp, :layer => x -> getindex.(tuple(layer_names), x); renamecols = false);
     # Since `unstack` doesn't play nicely with an empty dataframe, do it ourselves
     temp = if isempty(temp)
-        DF.select(temp, :t)
+        select(temp, :t)
     else
-        DF.unstack(DF.combine(DF.groupby(temp, [:t, :layer]), DF.nrow), :layer, :nrow);
+        unstack(combine(groupby(temp, [:t, :layer]), nrow), :layer, :nrow);
     end;
     # Prepend the dataframe with a set of zeros
-    layers = DF.DataFrame(t = [0], phone = [0], wom = [0], sm = [0]);
-    DF.append!(layers, temp; cols = :subset);
+    layers = DataFrame(t = [0], phone = [0], wom = [0], sm = [0]);
+    append!(layers, temp; cols = :subset);
     # Replace missing values with 0 since we'll take a cumulative sum on it next
-    DF.transform!(layers, x -> coalesce.(x, 0));
-    DF.transform!(layers, :phone => cumsum, :wom => cumsum, :sm => cumsum; renamecols = false);
+    transform!(layers, x -> coalesce.(x, 0));
+    transform!(layers, :phone => cumsum, :wom => cumsum, :sm => cumsum; renamecols = false);
 
     dissem, probs, layers, evac
 end
@@ -427,17 +422,17 @@ Perform a Monte Carlo iteration of [`disseminate`](@ref) `n` times.
 Keyword parameter `pb` indicates if a progress bar will be shown in the REPL. All parameters besides `pb` and `n`
 can be found in the help of [`disseminate`](@ref).
 """
-function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Dist.Distribution = Dist.Uniform(), pb = true)
-    data = [DF.DataFrame() for _ ∈ 1:4];
+function monte_carlo(G::Vector, n::Int, n₀::Int, p, pₗ, tₗ, c, r, d; u::Distribution = Uniform(), pb = true)
+    data = [DataFrame() for _ ∈ 1:4];
 
-    progress_bar = PM.Progress(n; enabled = pb);
+    progress_bar = Progress(n; enabled = pb);
 
     for i ∈ 1:n
         newest = disseminate(deepcopy(G), n₀, p, pₗ, tₗ, c, r, d; u = u);
-        DF.insertcols!.(newest, :run => i);
-        DF.append!.(data, newest);
+        insertcols!.(newest, :run => i);
+        append!.(data, newest);
 
-        PM.next!(progress_bar);
+        next!(progress_bar);
     end
 
     data
@@ -456,24 +451,24 @@ collection wrapping even if they will not be analyzed.
 [`conflevel`](@ref), and [`evac`](@ref), not the functions themselves. However, this would be an easy change.
 """
 function sensitivity_analysis(G::Vector, n::Int, n₀, p, pₗ, tₗ, c, r, d; pb = true)
-    data = [DF.DataFrame() for _ ∈ 1:4];
-    u = Dist.Uniform();
+    data = [DataFrame() for _ ∈ 1:4];
+    u = Uniform();
 
-    progress_bar = PM.Progress(length(n₀) * length(p); enabled = pb);
+    progress_bar = Progress(length(n₀) * length(p); enabled = pb);
 
     for n₀ᵢ ∈ n₀, pᵢ ∈ p, pₗᵢ ∈ pₗ, tₗᵢ ∈ tₗ, cᵢ ∈ c, rᵢ ∈ r, dᵢ ∈ d
         newest = monte_carlo(G, n, n₀ᵢ, shareprob(pᵢ), layerprob(pₗᵢ), tₗᵢ, conflevel(cᵢ), evac(rᵢ), dᵢ; u, pb = false);
-        DF.insertcols!.(newest, :n₀ => n₀ᵢ);
-        DF.insertcols!.(newest, :p => pᵢ);
-        DF.insertcols!.(newest, :pₗ => tuple(pₗᵢ));
-        DF.insertcols!.(newest, :tₗ => tuple(tₗᵢ));
-        DF.insertcols!.(newest, :c => cᵢ);
-        DF.insertcols!.(newest, :r => rᵢ);
-        DF.insertcols!.(newest, :d => dᵢ);
+        insertcols!.(newest, :n₀ => n₀ᵢ);
+        insertcols!.(newest, :p => pᵢ);
+        insertcols!.(newest, :pₗ => tuple(pₗᵢ));
+        insertcols!.(newest, :tₗ => tuple(tₗᵢ));
+        insertcols!.(newest, :c => cᵢ);
+        insertcols!.(newest, :r => rᵢ);
+        insertcols!.(newest, :d => dᵢ);
 
-        DF.append!.(data, newest);
+        append!.(data, newest);
 
-        PM.next!(progress_bar);
+        next!(progress_bar);
     end
 
     data
@@ -511,7 +506,7 @@ Draw the results of a simulation in DataFrame `df` on axis `ax`.
 `y` is the heading of the results column. This function can take any keyword arguments which work for `Makie`'s plotting.
 """
 function draw_run(ax, df, y; kwargs...)
-    Makie.lines!(ax, df.t, df[!, y]; kwargs...);
+    lines!(ax, df.t, df[!, y]; kwargs...);
 end
 
 """
@@ -528,13 +523,14 @@ draw_disseminate(ax, df; kwargs...) = draw_run(ax, df, :dissem; kwargs...);
 
 Draw the use of the layers in a simulation in DataFrame `df` on axis `ax`.
 
+Requires phone, wom, and sm columns in the DataFrame.
 This function can take any keyword arguments which work for `Makie`'s plotting.
 """
 function draw_layers(ax, df; kwargs...)
-    Makie.lines!(ax, df.t, df.phone; label = "phone", kwargs...);
-    Makie.lines!(ax, df.t, df.wom; label = "word of mouth", kwargs...);
-    Makie.lines!(ax, df.t, df.sm; label = "social media", kwargs...);
-    Makie.axislegend(ax; unique = true);
+    lines!(ax, df.t, df.phone; label = "phone", kwargs...);
+    lines!(ax, df.t, df.wom; label = "word of mouth", kwargs...);
+    lines!(ax, df.t, df.sm; label = "social media", kwargs...);
+    axislegend(ax; unique = true);
 end
 
 """
@@ -549,8 +545,8 @@ will likely be connected. `opacity` determines the opacity of the lines. This fu
 which work for `Makie`'s plotting.
 """
 function draw_monte_carlo(ax, df, y = :dissem; sortby = [], opacity = .1, kwargs...)
-    for dfᵢ ∈ DF.groupby(df, [:run, sortby...])
-        draw_run(ax, dfᵢ, y; color = Colors.RGBA(0., 0., 0., opacity), kwargs...);
+    for dfᵢ ∈ groupby(df, [:run, sortby...])
+        draw_run(ax, dfᵢ, y; color = RGBA(0., 0., 0., opacity), kwargs...);
     end
 end
 
@@ -564,8 +560,8 @@ Draw the final total for each simulation as a single point.
 This function can take any keyword arguments which work for `Makie`'s plotting.
 """
 function draw_sensitivity_analysis(ax, df, x::Symbol, y::Symbol = :dissem; kwargs...)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
-    Makie.scatter!(ax, agg_df[!, x], agg_df[!, y]; color = Colors.RGBA(0., 0., 0., 1.), markersize = 6, marker = 'o', kwargs...);
+    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :r, :d]));
+    scatter!(ax, agg_df[!, x], agg_df[!, y]; color = RGBA(0., 0., 0., 1.), markersize = 6, marker = 'o', kwargs...);
 end
 
 """
@@ -584,7 +580,7 @@ which work for `Makie`'s plotting.
 Note that this function is best used with a `df` created from sensitivity analysis; otherwise, it'll do the same thing as [`draw_monte_carlo`](@ref).
 """
 function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1, kwargs...)
-    gdf = DF.groupby(df, yx; sort = true);
+    gdf = groupby(df, yx; sort = true);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple(yx));
     # Fortunately we won't have many plots, otherwise this would be very expensive
@@ -594,7 +590,7 @@ function draw_grid_monte_carlo(f, df, yx, y = :dissem; sortby = [], opacity = .1
     axs = [];
     for i ∈ 1:y_len, j ∈ 1:x_len
         count = (i - 1) * x_len + j;
-        push!(axs, Makie.Axis(f[i, j]; title = titles[count]));
+        push!(axs, Axis(f[i, j]; title = titles[count]));
     end
     for ax ∈ axs[(end - x_len + 1):end]
         ax.xlabel = "t";
@@ -618,13 +614,13 @@ The variable changing on the horizontal axis within each plot is provided by `x`
 This function can take any keyword arguments which work for `Makie`'s plotting.
 """
 function draw_row_sensitivity_analysis(f, df, x, row, y = :dissem; kwargs...)
-    agg_df = DF.combine(dfᵢ -> DF.combine(dfⱼ -> last(dfⱼ), DF.groupby(dfᵢ, :run)), DF.groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :tᵣ, :d]));
-    gdf = DF.groupby(agg_df, row);
+    agg_df = combine(dfᵢ -> combine(dfⱼ -> last(dfⱼ), groupby(dfᵢ, :run)), groupby(df, [:n₀, :p, :pₗ, :tₗ, :c, :r, :d]));
+    gdf = groupby(agg_df, row);
     params = keys(gdf);
     titles = namedtuple_to_string.(NamedTuple.(params), tuple([row]));
 
-    axs = [Makie.Axis(f[1, i]; xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
-    Makie.linkaxes!(axs...);
+    axs = [Axis(f[1, i]; xlabel = string(x), title = titles[i]) for i ∈ 1:length(params)];
+    linkaxes!(axs...);
     axs[1].ylabel = "Total Nodes Informed";
     for (ax, dfᵢ) ∈ zip(axs, gdf)
         draw_sensitivity_analysis(ax, dfᵢ, x, y; kwargs...);
@@ -653,7 +649,7 @@ Return a subset of the dataframe `df` based on the dictionary `d`.
 `d` is a dictionary of `key => [value]` pairs where `[value]` is the range of accepted values in the column `key`.
 Essentially an OR operation in `[value]` and an AND operation with the keys to determine which rows to keep.
 """
-subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
+subsetresults(df, d) = subset(df, map(k -> k => x -> x .∈ tuple(d[k]), collect(keys(d)))...);
 
 """
     avgdeg(g)
@@ -661,7 +657,7 @@ subsetresults(df, d) = DF.subset(df, map(k -> k => x -> x .∈ tuple(d[k]), coll
 Compute the average degree of nodes in graph `g`.
 """
 function avgdeg(g)
-    deg = LG.degree(g);
+    deg = degree(g);
     sum(deg) / length(deg)
 end
 
@@ -671,7 +667,7 @@ end
 Compute the percentage of nodes in graph `g` with at least one edge.
 """
 function coverage(g)
-    deg = LG.degree(g);
+    deg = degree(g);
     1 - count(isequal(0), deg) / length(deg)
 end
 
@@ -694,6 +690,6 @@ Return a DataFrame provided by the `.jlso` file at location `filepath`.
 load(filepath) = JLSO.load(filepath)[:data];
 
 # If you want to save your figures, use `Makie`'s `save()` function.
-#Makie.save(joinpath("results", "filename.png"), fig);
+#GLMakie.save(joinpath("results", "filename.png"), fig);
 
 end
