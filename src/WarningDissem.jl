@@ -308,7 +308,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Distributi
 
     events = PriorityQueue();
     enqueue!.(tuple(events), nodes, tuple(Comm(0, 0, missing, missing)));
-    informed_times, prob_times, informed_layers, evac_times = [], [], Dict(:t => [], :layer => []), [];
+    informed_times, real_probs, informed_layers, evac_times = [], [], Dict(:t => [], :layer => []), [];
 
     # Make sure all of the initial properties of the network are set
     initnet!(G);
@@ -356,7 +356,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Distributi
         # If the node decides to communicate to its contacts
         prob = (sample ∘ p)(d - t, tₗ, conf);
         if sample(u) ≤ prob
-            push!(prob_times, prob);
+            push!(real_probs, prob);
             # Pick a layer based on the weights of `pₗ`
             layer = searchsortedfirst((cumsum ∘ broadcast)(sample, pₗ(d - t, tₗ)), sample(u));
             contacts = copy(neighbors(G[layer], node));
@@ -391,8 +391,8 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Distributi
     end
 
     dissem = hist2cmf(DataFrame(t = AbstractFloat.(informed_times)), :t, :dissem);
-    probs = hist2cmf(DataFrame(t = AbstractFloat.(prob_times)), :t, :prob);
-    evac = hist2cmf(DataFrame(t = AbstractFloat.(evac_times)), :t, :evac);
+    probs = hist2cmf(DataFrame(prob = AbstractFloat.(real_probs)), :prob, :informed);
+    evacs = hist2cmf(DataFrame(t = AbstractFloat.(evac_times)), :t, :evac);
 
     # Form layer dissemination data in a more convenient format
     layer_names = [:phone, :wom, :sm];
@@ -411,7 +411,7 @@ function disseminate(G::Vector, n₀::Int, p, pₗ, tₗ, c, r, d; u::Distributi
     transform!(layers, x -> coalesce.(x, 0));
     transform!(layers, :phone => cumsum, :wom => cumsum, :sm => cumsum; renamecols = false);
 
-    dissem, probs, layers, evac
+    dissem, probs, layers, evacs
 end
 
 """
